@@ -17,6 +17,9 @@ except ImportError as e:
 
 # --- Configuration ---
 DATA_DIR = "data" 
+# Define the precision for displaying unit prices
+UNIT_PRICE_DISPLAY_PRECISION = 6 # Changed from 4 to 6
+
 HOLDINGS_FILES_INFO = [ 
     {"file": "Accumulation-High-Growth.csv", "name": "High Growth"},
     {"file": "Accumulation-High-Growth-Socially-Conscious (1).csv", "name": "High Growth Socially Conscious"},
@@ -52,14 +55,12 @@ def load_all_fund_data(uploaded_file_obj):
         st.sidebar.success(f"Loaded unit prices from: {uploaded_file_obj.name}")
     else:
         st.sidebar.warning("Please upload a Unit Price History CSV to begin analysis.")
-        # Optional: Load a default if you want to run without uploading every time for testing
-        # default_unit_price_file = os.path.join(DATA_DIR, "FutureSaver_UnitPriceHistory-22-05-2025.csv") # Example
-        # if os.path.exists(default_unit_price_file):
-        #     price_history_df = load_unit_price_history(default_unit_price_file)
-        #     st.sidebar.info(f"Using default unit price file: {default_unit_price_file}")
-        # else:
-        price_history_df = pd.DataFrame(columns=['Date', 'FundName', 'UnitPrice'])
-
+        default_unit_price_file = os.path.join(DATA_DIR, "FutureSaver_UnitPriceHistory-22-05-2025.csv") # Example, ensure this exists if used
+        if os.path.exists(default_unit_price_file):
+            price_history_df = load_unit_price_history(default_unit_price_file)
+            st.sidebar.info(f"Using default unit price file: {default_unit_price_file}")
+        else:
+             price_history_df = pd.DataFrame(columns=['Date', 'FundName', 'UnitPrice'])
 
     all_fund_holdings_data = {}
     combined_keywords = set()
@@ -67,7 +68,6 @@ def load_all_fund_data(uploaded_file_obj):
     for fund_spec in HOLDINGS_FILES_INFO:
         holdings_file_path = os.path.join(DATA_DIR, fund_spec["file"])
         if not os.path.exists(holdings_file_path):
-            # st.warning(f"Holdings file not found: {holdings_file_path} for fund {fund_spec['name']}") # UI
             print(f"Holdings file not found: {holdings_file_path} for fund {fund_spec['name']}") # CLI
             all_fund_holdings_data[fund_spec["name"]] = pd.DataFrame() 
             continue
@@ -147,7 +147,8 @@ if not price_data.empty:
         latest_entry = fund_price_history.iloc[0]
         last_price = latest_entry['UnitPrice']
         last_price_date_str = latest_entry['Date'].strftime('%d/%m/%Y')
-        st.subheader(f"Latest Actual Unit Price ({last_price_date_str}): {last_price:.4f}")
+        # Use the UNIT_PRICE_DISPLAY_PRECISION constant for formatting
+        st.subheader(f"Latest Actual Unit Price ({last_price_date_str}): {last_price:.{UNIT_PRICE_DISPLAY_PRECISION}f}")
 
         if len(fund_price_history) > 1:
             previous_entry = fund_price_history.iloc[1]
@@ -156,8 +157,9 @@ if not price_data.empty:
             actual_change_val = last_price - previous_price
             actual_change_percent = (actual_change_val / previous_price) * 100 if previous_price != 0 else 0
             
-            actual_change_str = f"{actual_change_val:+.4f}"
-            actual_change_percent_str = f"{actual_change_percent:+.4f}%"
+            # Use the UNIT_PRICE_DISPLAY_PRECISION constant for formatting
+            actual_change_str = f"{actual_change_val:+.{UNIT_PRICE_DISPLAY_PRECISION}f}"
+            actual_change_percent_str = f"{actual_change_percent:+.4f}%" # Percentage change can stay at 4dp
             
             st.metric(label=f"Actual Change from {previous_price_date_str}", value=actual_change_str, delta=f"{actual_change_percent_str}")
         else:
@@ -167,12 +169,8 @@ if not price_data.empty:
 else: 
     st.warning("Unit price history data is not available or not loaded.")
 
-# Get current holdings for the selected fund
 current_holdings = holdings_data_all_funds.get(selected_fund)
-
-# --- Impact Estimation Display (uses previous_price as baseline for estimation) ---
-# The IEM estimates the change from previous_price to today's price (last_price date)
-baseline_price_for_estimation = previous_price if previous_price > 0 else last_price # Use previous if available
+baseline_price_for_estimation = previous_price if previous_price > 0 else last_price 
 
 if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0:
     st.subheader("Impact Estimation on Unit Price (Estimating for Today):")
@@ -202,8 +200,9 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
 
         if news_for_iem_calculation:
             iem_result = calculate_fund_impact(current_holdings, news_for_iem_calculation, baseline_price_for_estimation)
-            st.metric("Total Est. % Change from News", f"{iem_result.get('total_estimated_fund_percentage_change',0.0):.4f}%")
-            st.metric("Estimated New Unit Price (for today)", f"{iem_result.get('estimated_new_unit_price', baseline_price_for_estimation):.4f}")
+            # Use the UNIT_PRICE_DISPLAY_PRECISION constant for formatting
+            st.metric("Total Est. % Change from News", f"{iem_result.get('total_estimated_fund_percentage_change',0.0):.4f}%") # Percentage change can stay 4dp
+            st.metric("Estimated New Unit Price (for today)", f"{iem_result.get('estimated_new_unit_price', baseline_price_for_estimation):.{UNIT_PRICE_DISPLAY_PRECISION}f}")
 
             with st.expander("Show Detailed Impact Calculations"):
                 impact_details_list = iem_result.get('impact_details', [])
@@ -225,7 +224,6 @@ elif baseline_price_for_estimation == 0 and current_holdings is not None and not
 
 st.markdown("---") 
 
-# Display Holdings 
 if current_holdings is not None and not current_holdings.empty:
     st.subheader("Top 5 Holdings:")
     if "Weighting" in current_holdings.columns:
@@ -237,7 +235,6 @@ if current_holdings is not None and not current_holdings.empty:
 else:
     st.warning(f"No holdings data loaded for {selected_fund}.")
 
-# Display Relevant News 
 if current_holdings is not None and not current_holdings.empty:
     fund_specific_keywords_lc_display = set()
     if "CanonicalHoldingName" in current_holdings.columns:
@@ -261,12 +258,12 @@ if current_holdings is not None and not current_holdings.empty:
     for news_item_full_display in news_items_analyzed:
         text_content_display = (str(news_item_full_display.get("title","")) + " " + str(news_item_full_display.get("summary",""))).lower()
         news_matched_display_keyword = None
-        for kw_disp in display_keywords_for_fund_news: # Check all relevant keywords for display
+        for kw_disp in display_keywords_for_fund_news: 
             if kw_disp in text_content_display:
                 if kw_disp in general_keywords_for_display and kw_disp not in fund_specific_keywords_lc_display:
                     news_matched_display_keyword = f"General: {kw_disp}"
                 else:
-                    news_matched_display_keyword = kw_disp # Specific match
+                    news_matched_display_keyword = kw_disp 
                 break 
         
         if news_matched_display_keyword and news_item_full_display.get('link') not in processed_news_links_for_display_set:
@@ -289,3 +286,4 @@ if current_holdings is not None and not current_holdings.empty:
 
 st.sidebar.markdown("---")
 st.sidebar.info("Prototype V1.0. For informational and educational purposes only. Not financial advice.")
+
