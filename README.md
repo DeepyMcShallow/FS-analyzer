@@ -8,6 +8,7 @@ Supply a current FS unit price CSV file, which will be used to compare
 against news items for the holdings in the different investment options.
 
 The Pros:
+
 -Pretty easy to use, just provide the right file and watch it do it's thing.
 
 -The vibe
