@@ -13,6 +13,9 @@ The Pros:
 The Cons/TO DO:
 -The weightings of the assumptions need tweaking, plus it's really only accessing and anlyzing the Headlines and summary of the news stories.
 It does provide links to those stories, which can be useful, I suppose...
+
 -Accuracy
+
 -Fine tuning
+
 -Fins
