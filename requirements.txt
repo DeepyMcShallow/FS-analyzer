@@ -1,0 +1,6 @@
+pandas
+streamlit
+feedparser
+nltk
+requests
+python-dateutil
