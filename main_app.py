@@ -1,7 +1,7 @@
 # main_app.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone # Added timezone import
 import os
 import io 
 import gspread 
@@ -159,7 +159,6 @@ def save_estimate_to_gsheet(client, sheet_name, worksheet_name, current_log_df_i
         set_with_dataframe(sheet, updated_df_for_gsheet.astype(str), include_index=False, resize=True) 
         
         print(f"Successfully saved estimate for {new_estimate_data['FundName']} to GSheet: {sheet_name}/{worksheet_name}") # For logs
-        # Return the DataFrame with proper dtypes after reloading from GSheet for consistency
         return load_estimates_from_gsheet(client, sheet_name, worksheet_name) 
     except Exception as e:
         st.error(f"Google Sheets Error: Could not save estimate: {e}")
@@ -218,7 +217,7 @@ def load_all_fund_data(uploaded_file_obj_param):
     return price_history_df, all_fund_holdings_data, list(combined_keywords)
 
 @st.cache_data(ttl=900) 
-def fetch_process_news(keywords_list): # DEFINITION MOVED UP
+def fetch_process_news(keywords_list): 
     raw_news = aggregate_news(RSS_FEEDS_CONFIG, keywords_list, days_history=3) 
     analyzed_news = []
     for item in raw_news:
@@ -234,31 +233,25 @@ def fetch_process_news(keywords_list): # DEFINITION MOVED UP
 # --- Streamlit App UI and Main Logic Starts Here ---
 st.set_page_config(layout="wide", page_title="FutureSaver Analysis")
 st.title("FutureSaver - News, Sentiment & Impact Estimator")
-# Ensure this caption is using AEST as per user location, or make it dynamic/UTC
+# Corrected timezone usage
 st.caption(f"Report Generated: {datetime.now(timezone(timedelta(hours=10))).strftime('%A, %d %B %Y, %I:%M %p AEST')}")
 
 
 st.sidebar.header("Data Upload")
 uploaded_unit_price_file = st.sidebar.file_uploader("Upload Latest Unit Price History CSV", type=["csv"])
 
-# Initialize Gspread Client & Load Estimates Log from GSheet
 gs_client = init_gspread_client()
 estimates_log_df_global = load_estimates_from_gsheet(gs_client, GOOGLE_SHEET_NAME, WORKSHEET_NAME)
 
-# Load core data (prices from upload/default, holdings from local files)
 price_data, holdings_data_all_funds, all_keywords = load_all_fund_data(uploaded_unit_price_file)
 
-# Display messages based on data loading status
 if price_data.empty and not uploaded_unit_price_file:
     st.sidebar.error("Please upload a Unit Price History CSV to start.")
-    # st.stop() # Decide if app should stop or run with limited functionality
 elif price_data.empty and uploaded_unit_price_file:
     st.error(f"Failed to process the uploaded unit price file: {uploaded_unit_price_file.name}. Check console.")
-    # st.stop()
 
-# Fetch news (only if keywords were generated from holdings)
 news_items_analyzed = []
-if all_keywords and not any(df.empty for df in holdings_data_all_funds.values()): # Ensure holdings actually loaded
+if all_keywords and not any(df.empty for df in holdings_data_all_funds.values()): 
     news_items_analyzed = fetch_process_news(all_keywords)
 elif not all_keywords:
     st.warning("No keywords generated (holdings might not have loaded). News fetching skipped.")
@@ -273,8 +266,6 @@ selected_fund_for_detail = st.sidebar.selectbox("Choose a fund for detailed anal
 
 st.header(f"Detailed Analysis for: {selected_fund_for_detail}")
 
-# --- Display Latest Unit Price & ACTUAL Day-over-Day Change ---
-# ... (This entire section for displaying actual price and change remains the same as main_app_py_v10) ...
 last_price = 0.0
 previous_price = 0.0
 last_price_date = None 
@@ -310,15 +301,12 @@ if not price_data.empty:
 else: 
     st.warning("Unit price history data is not available or not loaded.")
 
-
-# --- Impact Estimation Display & Saving ---
 current_holdings = holdings_data_all_funds.get(selected_fund_for_detail)
 baseline_price_for_estimation = previous_price if previous_price > 0 else last_price 
 
 if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0 and last_price_date is not None:
     st.subheader(f"Impact Estimation on Unit Price (Estimating for {last_price_date.strftime('%d/%m/%Y')} based on news up to today):")
     with st.spinner("Calculating estimated impact..."):
-        # ... (IEM keyword filtering logic as in v10) ...
         fund_specific_keywords_lc_iem = set()
         if "CanonicalHoldingName" in current_holdings.columns:
             for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -362,7 +350,6 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
                 estimates_log_df_global = save_estimate_to_gsheet(gs_client, GOOGLE_SHEET_NAME, WORKSHEET_NAME, estimates_log_df_global, new_estimate_data)
                 
             with st.expander("Show Detailed Impact Calculations"):
-                # ... (Detailed impact display as in v10) ...
                 impact_details_list = iem_result.get('impact_details', [])
                 if impact_details_list:
                     for detail in impact_details_list:
@@ -380,21 +367,22 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
 elif baseline_price_for_estimation == 0 and current_holdings is not None and not current_holdings.empty: 
     st.warning("Cannot calculate impact: Baseline unit price for estimation is zero or unavailable.")
 
-# ... (Rest of the app layout: Top 5 Holdings, Historical Chart, Relevant News Display as in main_app_py_v10, 
-#      making sure to use `estimates_log_df_global` for plotting) ...
 st.markdown("---") 
 if current_holdings is not None and not current_holdings.empty:
     st.subheader("Top 5 Holdings:")
     if "Weighting" in current_holdings.columns:
         st.dataframe(current_holdings.nlargest(5, 'Weighting')[["CanonicalHoldingName", "Ticker", "AssetClass", "Weighting", "Currency"]])
-    # ... (rest of top 5 holdings display)
+    else:
+        st.warning("Top holdings display issue: 'Weighting' column missing.")
+        cols_to_show = [col for col in ["CanonicalHoldingName", "Ticker", "AssetClass", "Currency"] if col in current_holdings.columns]
+        if cols_to_show: st.dataframe(current_holdings.head()[cols_to_show])
 else:
     st.warning(f"No holdings data loaded for {selected_fund_for_detail}.")
 
 st.markdown("---")
 st.header("Historical Unit Price Chart (Actual vs. Estimated)")
-if not price_data.empty : #estimates_log_df_global check removed here, chart can show actuals even if no estimates
-    all_fund_names_for_plot = sorted(list(price_data['FundName'].unique())) # Start with funds in price_data
+if not price_data.empty : 
+    all_fund_names_for_plot = sorted(list(price_data['FundName'].unique())) 
     if not estimates_log_df_global.empty and 'FundName' in estimates_log_df_global.columns:
          all_fund_names_for_plot = sorted(list(set(all_fund_names_for_plot) | set(estimates_log_df_global['FundName'].unique())))
     
@@ -404,7 +392,6 @@ if not price_data.empty : #estimates_log_df_global check removed here, chart can
         "Select fund(s) to plot:", options=all_fund_names_for_plot, default=default_selection_for_plot
     )
     if selected_funds_for_plot:
-        # ... (plotting logic as in v10, using estimates_log_df_global)
         actual_plot_data = price_data[price_data['FundName'].isin(selected_funds_for_plot)].copy()
         actual_plot_pivot = pd.DataFrame()
         if not actual_plot_data.empty:
@@ -449,9 +436,8 @@ if not price_data.empty : #estimates_log_df_global check removed here, chart can
     else: st.info("Select fund(s) to display historical prices.")
 elif price_data.empty:
     st.warning("Unit price data not loaded. Cannot display historical chart.")
-else: # price_data exists but estimates_log_df_global might be empty
+else: 
     st.info("No estimates logged yet to display on historical chart. Actuals can still be plotted.")
-    # Plot actuals only if estimates are empty
     all_fund_names_for_plot = sorted(list(price_data['FundName'].unique()))
     default_selection_for_plot = [selected_fund_for_detail] if selected_fund_for_detail in all_fund_names_for_plot else ([all_fund_names_for_plot[0]] if all_fund_names_for_plot else [])
     selected_funds_for_plot = st.multiselect(
@@ -464,8 +450,6 @@ else: # price_data exists but estimates_log_df_global might be empty
             actual_plot_pivot = actual_plot_data.pivot_table(index='Date', columns='FundName', values='UnitPrice').sort_index()
             st.line_chart(actual_plot_pivot)
 
-
-# ... (Relevant News Display section as in v10) ...
 if current_holdings is not None and not current_holdings.empty:
     fund_specific_keywords_lc_display = set()
     if "CanonicalHoldingName" in current_holdings.columns:
@@ -506,7 +490,8 @@ if current_holdings is not None and not current_holdings.empty:
             
     st.subheader(f"Recent Relevant News ({len(fund_relevant_news_display_list)} items found for this fund):")
     if fund_relevant_news_display_list:
-        for item_disp in fund_relevant_news_display__list[:20]: 
+        # Corrected variable name in the loop below
+        for item_disp in fund_relevant_news_display_list[:20]: 
             exp_title_disp = f"{item_disp.get('published_str','N/A')} - **{item_disp.get('sentiment_strength','N/A')} ({item_disp.get('sentiment_compound',0.0):.2f})**: {item_disp.get('title','No Title')}"
             with st.expander(exp_title_disp):
                 st.markdown(f"**Source:** {item_disp.get('source_feed_name','N/A')}")
@@ -515,7 +500,5 @@ if current_holdings is not None and not current_holdings.empty:
                 if item_disp.get('link'): st.markdown(f"[Read full article]({item_disp['link']})", unsafe_allow_html=True)
     else: st.info("No specific or generally relevant news found for this fund in the last 3 days from configured feeds for display.")
 
-
 st.sidebar.markdown("---")
 st.sidebar.info("Prototype V1.0. For informational and educational purposes only. Not financial advice.")
-
