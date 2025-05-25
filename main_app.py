@@ -17,8 +17,7 @@ except ImportError as e:
 
 # --- Configuration ---
 DATA_DIR = "data" 
-# Define the precision for displaying unit prices
-UNIT_PRICE_DISPLAY_PRECISION = 6 # Changed from 4 to 6
+UNIT_PRICE_DISPLAY_PRECISION = 6 
 
 HOLDINGS_FILES_INFO = [ 
     {"file": "Accumulation-High-Growth.csv", "name": "High Growth"},
@@ -41,7 +40,7 @@ HOLDINGS_FILES_INFO = [
 # --- Streamlit App Layout ---
 st.set_page_config(layout="wide", page_title="FutureSaver Analysis")
 st.title("FutureSaver - News, Sentiment & Impact Estimator")
-st.caption(f"Report Generated: {datetime.now().strftime('%A, %d %B %Y, %I:%M %p %Z')}")
+st.caption(f"Report Generated: {datetime.now().strftime('%A, %d %B %Y, %I:%M %p AEST')}") # Added AEST
 
 st.sidebar.header("Data Upload")
 uploaded_unit_price_file = st.sidebar.file_uploader("Upload Latest Unit Price History CSV", type=["csv"])
@@ -52,12 +51,19 @@ def load_all_fund_data(uploaded_file_obj):
     price_history_df = pd.DataFrame() 
     if uploaded_file_obj is not None:
         price_history_df = load_unit_price_history(uploaded_file_obj)
+        # Ensure 'Date' column is datetime
+        if 'Date' in price_history_df.columns:
+            price_history_df['Date'] = pd.to_datetime(price_history_df['Date'], errors='coerce')
+            price_history_df.dropna(subset=['Date'], inplace=True) # Remove rows where date couldn't be parsed
         st.sidebar.success(f"Loaded unit prices from: {uploaded_file_obj.name}")
     else:
         st.sidebar.warning("Please upload a Unit Price History CSV to begin analysis.")
-        default_unit_price_file = os.path.join(DATA_DIR, "FutureSaver_UnitPriceHistory-22-05-2025.csv") # Example, ensure this exists if used
+        default_unit_price_file = os.path.join(DATA_DIR, "FutureSaver_UnitPriceHistory-22-05-2025.csv") 
         if os.path.exists(default_unit_price_file):
             price_history_df = load_unit_price_history(default_unit_price_file)
+            if 'Date' in price_history_df.columns: # Also ensure Date is datetime for default
+                 price_history_df['Date'] = pd.to_datetime(price_history_df['Date'], errors='coerce')
+                 price_history_df.dropna(subset=['Date'], inplace=True)
             st.sidebar.info(f"Using default unit price file: {default_unit_price_file}")
         else:
              price_history_df = pd.DataFrame(columns=['Date', 'FundName', 'UnitPrice'])
@@ -116,7 +122,7 @@ if price_data.empty and not uploaded_unit_price_file:
     st.error("Please upload a Unit Price History CSV file to start the analysis.")
     st.stop()
 elif price_data.empty and uploaded_unit_price_file:
-    st.error(f"Failed to process the uploaded unit price file: {uploaded_unit_price_file.name}. Check console for errors.")
+    st.error(f"Failed to process the uploaded unit price file: {uploaded_unit_price_file.name}. Check console for errors, or ensure the file is not empty and correctly formatted.")
     st.stop()
 
 news_items_analyzed = []
@@ -130,51 +136,52 @@ available_fund_names = sorted([f_info["name"] for f_info in HOLDINGS_FILES_INFO 
 if not available_fund_names:
     st.error("No fund data loaded successfully for selection. Check console for data loading errors for holdings files.")
     st.stop()
-selected_fund = st.sidebar.selectbox("Choose a fund to analyze:", available_fund_names)
+selected_fund_for_detail = st.sidebar.selectbox("Choose a fund for detailed analysis:", available_fund_names)
 
-st.header(f"Detailed Analysis for: {selected_fund}")
+st.header(f"Detailed Analysis for: {selected_fund_for_detail}")
 
-# --- Display Latest Unit Price & ACTUAL Day-over-Day Change ---
 last_price = 0.0
 previous_price = 0.0
 last_price_date_str = "N/A"
-actual_change_str = "N/A"
-actual_change_percent_str = "N/A"
 
 if not price_data.empty:
-    fund_price_history = price_data[price_data['FundName'] == selected_fund].sort_values(by='Date', ascending=False)
-    if not fund_price_history.empty:
-        latest_entry = fund_price_history.iloc[0]
+    fund_price_history_selected = price_data[price_data['FundName'] == selected_fund_for_detail].sort_values(by='Date', ascending=False)
+    if not fund_price_history_selected.empty:
+        latest_entry = fund_price_history_selected.iloc[0]
         last_price = latest_entry['UnitPrice']
-        last_price_date_str = latest_entry['Date'].strftime('%d/%m/%Y')
-        # Use the UNIT_PRICE_DISPLAY_PRECISION constant for formatting
+        last_price_date = latest_entry['Date'] # Keep as datetime for comparison
+        last_price_date_str = last_price_date.strftime('%d/%m/%Y')
         st.subheader(f"Latest Actual Unit Price ({last_price_date_str}): {last_price:.{UNIT_PRICE_DISPLAY_PRECISION}f}")
 
-        if len(fund_price_history) > 1:
-            previous_entry = fund_price_history.iloc[1]
-            previous_price = previous_entry['UnitPrice']
-            previous_price_date_str = previous_entry['Date'].strftime('%d/%m/%Y')
-            actual_change_val = last_price - previous_price
-            actual_change_percent = (actual_change_val / previous_price) * 100 if previous_price != 0 else 0
-            
-            # Use the UNIT_PRICE_DISPLAY_PRECISION constant for formatting
-            actual_change_str = f"{actual_change_val:+.{UNIT_PRICE_DISPLAY_PRECISION}f}"
-            actual_change_percent_str = f"{actual_change_percent:+.4f}%" # Percentage change can stay at 4dp
-            
-            st.metric(label=f"Actual Change from {previous_price_date_str}", value=actual_change_str, delta=f"{actual_change_percent_str}")
+        if len(fund_price_history_selected) > 1:
+            previous_entry = fund_price_history_selected.iloc[1]
+            # Ensure previous_entry date is actually before latest_entry date
+            if previous_entry['Date'] < last_price_date:
+                previous_price = previous_entry['UnitPrice']
+                previous_price_date_str = previous_entry['Date'].strftime('%d/%m/%Y')
+                actual_change_val = last_price - previous_price
+                actual_change_percent = (actual_change_val / previous_price) * 100 if previous_price != 0 else 0
+                actual_change_str = f"{actual_change_val:+.{UNIT_PRICE_DISPLAY_PRECISION}f}"
+                actual_change_percent_str = f"{actual_change_percent:+.4f}%"
+                st.metric(label=f"Actual Change from {previous_price_date_str}", value=actual_change_str, delta=f"{actual_change_percent_str}")
+            else:
+                st.info("Previous day's price not directly before latest; cannot calculate simple day-over-day change accurately.")
+                previous_price = last_price # Use last_price as baseline if no valid previous
         else:
-            st.info("Not enough historical data in the uploaded file to calculate actual day-over-day change for this fund.")
+            st.info("Not enough historical data to calculate actual day-over-day change.")
+            previous_price = last_price # Use last_price if only one record
     else: 
-        st.warning(f"No price history found for {selected_fund} in the uploaded file.")
+        st.warning(f"No price history found for {selected_fund_for_detail} in the uploaded file.")
 else: 
     st.warning("Unit price history data is not available or not loaded.")
 
-current_holdings = holdings_data_all_funds.get(selected_fund)
+current_holdings = holdings_data_all_funds.get(selected_fund_for_detail)
 baseline_price_for_estimation = previous_price if previous_price > 0 else last_price 
 
 if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0:
     st.subheader("Impact Estimation on Unit Price (Estimating for Today):")
     with st.spinner("Calculating estimated impact..."):
+        # ... (IEM keyword filtering and calculation logic remains the same as main_app_py_v5) ...
         fund_specific_keywords_lc_iem = set()
         if "CanonicalHoldingName" in current_holdings.columns:
             for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -200,11 +207,11 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
 
         if news_for_iem_calculation:
             iem_result = calculate_fund_impact(current_holdings, news_for_iem_calculation, baseline_price_for_estimation)
-            # Use the UNIT_PRICE_DISPLAY_PRECISION constant for formatting
-            st.metric("Total Est. % Change from News", f"{iem_result.get('total_estimated_fund_percentage_change',0.0):.4f}%") # Percentage change can stay 4dp
+            st.metric("Total Est. % Change from News", f"{iem_result.get('total_estimated_fund_percentage_change',0.0):.4f}%")
             st.metric("Estimated New Unit Price (for today)", f"{iem_result.get('estimated_new_unit_price', baseline_price_for_estimation):.{UNIT_PRICE_DISPLAY_PRECISION}f}")
 
             with st.expander("Show Detailed Impact Calculations"):
+                # ... (Detailed impact display remains the same) ...
                 impact_details_list = iem_result.get('impact_details', [])
                 if impact_details_list:
                     for detail in impact_details_list:
@@ -233,9 +240,52 @@ if current_holdings is not None and not current_holdings.empty:
         cols_to_show = [col for col in ["CanonicalHoldingName", "Ticker", "AssetClass", "Currency"] if col in current_holdings.columns]
         if cols_to_show: st.dataframe(current_holdings.head()[cols_to_show])
 else:
-    st.warning(f"No holdings data loaded for {selected_fund}.")
+    st.warning(f"No holdings data loaded for {selected_fund_for_detail}.")
 
+# --- NEW SECTION: Historical Unit Price Chart ---
+st.markdown("---")
+st.header("Historical Unit Price Chart")
+
+if not price_data.empty:
+    all_fund_names_for_plot = sorted(price_data['FundName'].unique())
+    
+    # Default selection for the plot:
+    # Try to default to the fund selected for detailed analysis, if it exists in plot data.
+    default_selection_for_plot = []
+    if selected_fund_for_detail in all_fund_names_for_plot:
+        default_selection_for_plot = [selected_fund_for_detail]
+    elif all_fund_names_for_plot: # Fallback to the first available fund if current selection not in plot data
+        default_selection_for_plot = [all_fund_names_for_plot[0]]
+
+    selected_funds_for_plot = st.multiselect(
+        "Select fund(s) to plot:",
+        options=all_fund_names_for_plot,
+        default=default_selection_for_plot
+    )
+
+    if selected_funds_for_plot:
+        plot_data = price_data[price_data['FundName'].isin(selected_funds_for_plot)]
+        if not plot_data.empty:
+            # Pivot data for st.line_chart: Date as index, each fund as a column
+            # Ensure 'Date' is datetime and sorted for correct plotting
+            plot_data_pivot = plot_data.pivot_table(
+                index='Date', 
+                columns='FundName', 
+                values='UnitPrice'
+            ).sort_index()
+            
+            st.line_chart(plot_data_pivot)
+        else:
+            st.write("No data available for the selected fund(s) to plot.")
+    else:
+        st.info("Select one or more funds from the dropdown above to display their historical unit prices.")
+else:
+    st.warning("Unit price data not loaded. Cannot display historical chart.")
+
+
+# --- Display Relevant News (this logic is for display, might differ slightly from IEM input) ---
 if current_holdings is not None and not current_holdings.empty:
+    # ... (News display section remains the same as main_app_py_v5) ...
     fund_specific_keywords_lc_display = set()
     if "CanonicalHoldingName" in current_holdings.columns:
         for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -283,6 +333,7 @@ if current_holdings is not None and not current_holdings.empty:
                 st.markdown(str(item_disp.get("summary","")))
                 if item_disp.get('link'): st.markdown(f"[Read full article]({item_disp['link']})", unsafe_allow_html=True)
     else: st.info("No specific or generally relevant news found for this fund in the last 3 days from configured feeds for display.")
+
 
 st.sidebar.markdown("---")
 st.sidebar.info("Prototype V1.0. For informational and educational purposes only. Not financial advice.")
