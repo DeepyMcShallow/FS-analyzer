@@ -1,7 +1,7 @@
 # main_app.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, timezone # Added timezone import
+from datetime import datetime, timedelta, timezone # Ensure timezone is imported
 import os
 import io 
 import gspread 
@@ -22,8 +22,8 @@ except ImportError as e:
 # --- Configuration ---
 DATA_DIR = "data" 
 UNIT_PRICE_DISPLAY_PRECISION = 6 
-GOOGLE_SHEET_NAME = "FutureSaverEstimatesLog"  
-WORKSHEET_NAME = "Sheet1" 
+GOOGLE_SHEET_NAME = "FutureSaverEstimatesLog"  # Ensure this EXACTLY matches your Google Sheet name
+WORKSHEET_NAME = "Sheet1" # Ensure this is the correct tab name in your Google Sheet
 
 HOLDINGS_FILES_INFO = [ 
     {"file": "Accumulation-High-Growth.csv", "name": "High Growth"},
@@ -43,11 +43,12 @@ HOLDINGS_FILES_INFO = [
     {"file": "Accumulation-Cash.csv", "name": "Cash"}
 ]
 
-# --- Function Definitions (Moved all to the top) ---
+# --- Function Definitions ---
 
 @st.cache_resource(ttl=600) 
 def init_gspread_client():
     try:
+        service_account_email_for_debug = "Not retrieved"
         if hasattr(st, 'secrets') and "google_sheets_credentials" in st.secrets:
             creds_input = st.secrets["google_sheets_credentials"]
             if isinstance(creds_input, str): 
@@ -56,7 +57,8 @@ def init_gspread_client():
                 creds_dict = creds_input
             else:
                 st.error("Google Sheets credentials in Streamlit secrets are not in a recognized format.")
-                return None
+                return None, service_account_email_for_debug
+            service_account_email_for_debug = creds_dict.get("client_email", "Email not in creds_dict")
             creds = Credentials.from_service_account_info(creds_dict)
         else: 
             local_secrets_path = os.path.join(".streamlit", "secrets.toml")
@@ -71,28 +73,29 @@ def init_gspread_client():
                          creds_dict = creds_input
                     else:
                         st.error("Local Google Sheets credentials are not in a recognized format.")
-                        return None
+                        return None, service_account_email_for_debug
+                    service_account_email_for_debug = creds_dict.get("client_email", "Email not in creds_dict")
                     creds = Credentials.from_service_account_info(creds_dict)
                 else:
                     st.error("`google_sheets_credentials` not found in local `.streamlit/secrets.toml`.")
-                    return None
+                    return None, service_account_email_for_debug
             else:
                 st.error("Local `.streamlit/secrets.toml` not found for Google Sheets credentials.")
-                return None
+                return None, service_account_email_for_debug
 
         scoped_creds = creds.with_scopes([
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive.file" 
         ])
         client = gspread.authorize(scoped_creds)
-        print("Successfully initialized gspread client.") # For logs
-        return client
+        print(f"Successfully initialized gspread client. Service Account Email from creds: {service_account_email_for_debug}") 
+        return client, service_account_email_for_debug # Return email for debugging error messages
     except Exception as e:
         st.error(f"Google Sheets Error: Could not initialize gspread client: {e}")
-        print(f"Error initializing gspread client: {e}") # For logs
-        return None
+        print(f"Error initializing gspread client: {e}") 
+        return None, "Initialization failed"
 
-def load_estimates_from_gsheet(client, sheet_name, worksheet_name):
+def load_estimates_from_gsheet(client, service_account_email, sheet_name, worksheet_name): # Added service_account_email
     expected_cols = ['RunDateTime', 'EstimationForDate', 'FundName', 
                      'EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange']
     if client is None:
@@ -113,24 +116,26 @@ def load_estimates_from_gsheet(client, sheet_name, worksheet_name):
         else: 
             df = pd.DataFrame(columns=expected_cols)
         
-        for col in expected_cols: # Ensure all expected columns exist
+        for col in expected_cols: 
             if col not in df.columns:
                 df[col] = pd.Series(dtype='object' if 'Date' in col else ('float64' if 'Price' in col or 'Change' in col else 'object'))
         
-        print(f"Successfully loaded {len(df)} estimates from Google Sheet: {sheet_name}/{worksheet_name}") # For logs
+        print(f"Successfully loaded {len(df)} estimates from Google Sheet: {sheet_name}/{worksheet_name}") 
         return df
     except gspread.exceptions.SpreadsheetNotFound:
-        st.error(f"Google Sheet '{sheet_name}' not found. Ensure it exists and is shared with service account email: {getattr(client.auth, 'service_account_email', 'unknown') if client and client.auth else 'unknown'}")
+        # THIS IS THE CORRECTED ERROR MESSAGE USING THE PASSED PARAMETER
+        st.error(f"Google Sheet '{sheet_name}' not found. Please ensure it exists AND is shared with the service account email: '{service_account_email}'. Also check the GOOGLE_SHEET_NAME constant in the script.")
         return pd.DataFrame(columns=expected_cols)
     except gspread.exceptions.WorksheetNotFound:
-        st.error(f"Worksheet '{worksheet_name}' not found in Google Sheet '{sheet_name}'.")
+        st.error(f"Worksheet '{worksheet_name}' not found in Google Sheet '{sheet_name}'. Check WORKSHEET_NAME constant.")
         return pd.DataFrame(columns=expected_cols)
     except Exception as e:
         st.error(f"Google Sheets Error: Could not load estimates: {e}")
-        print(f"Error loading estimates from GSheet: {e}") # For logs
+        print(f"Error loading estimates from GSheet: {e}") 
         return pd.DataFrame(columns=expected_cols)
 
-def save_estimate_to_gsheet(client, sheet_name, worksheet_name, current_log_df_in_memory, new_estimate_data):
+def save_estimate_to_gsheet(client, service_account_email, sheet_name, worksheet_name, current_log_df_in_memory, new_estimate_data):
+    # ... (rest of save_estimate_to_gsheet as in main_app_py_v12) ...
     if client is None:
         st.warning("Google Sheets client not initialized. Cannot save estimate to cloud.")
         return current_log_df_in_memory
@@ -151,23 +156,39 @@ def save_estimate_to_gsheet(client, sheet_name, worksheet_name, current_log_df_i
         if 'EstimationForDate' in df_to_save.columns:
             df_to_save['EstimationForDate'] = pd.to_datetime(df_to_save['EstimationForDate'], errors='coerce').dt.strftime('%Y-%m-%d')
         
-        for col in df_to_save.columns:
-            if col not in new_row_df.columns: new_row_df[col] = None
-        if not df_to_save.empty: new_row_df = new_row_df[df_to_save.columns]
+        expected_cols_order = ['RunDateTime', 'EstimationForDate', 'FundName', 
+                               'EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange']
+        for col_expect in expected_cols_order:
+            if col_expect not in new_row_df.columns:
+                new_row_df[col_expect] = None # Or pd.NA for pandas > 1.0
+        
+        # Ensure new_row_df has columns in the expected order, matching df_to_save if it's not empty
+        if not df_to_save.empty:
+            # If df_to_save has columns, new_row_df should match them
+            # This assumes df_to_save already has the correct schema or is empty
+            cols_for_new_row = [col for col in df_to_save.columns if col in new_row_df.columns]
+            new_row_df = new_row_df[cols_for_new_row]
+        else: # If df_to_save is empty, new_row_df defines the schema based on expected_cols_order
+            new_row_df = new_row_df[expected_cols_order]
+
 
         updated_df_for_gsheet = pd.concat([df_to_save, new_row_df], ignore_index=True)
-        set_with_dataframe(sheet, updated_df_for_gsheet.astype(str), include_index=False, resize=True) 
+        set_with_dataframe(sheet, updated_df_for_gsheet.astype(str), include_index=False, resize=True, allow_formulas=False) 
         
-        print(f"Successfully saved estimate for {new_estimate_data['FundName']} to GSheet: {sheet_name}/{worksheet_name}") # For logs
-        return load_estimates_from_gsheet(client, sheet_name, worksheet_name) 
+        print(f"Successfully saved estimate for {new_estimate_data['FundName']} to GSheet: {sheet_name}/{worksheet_name}") 
+        return load_estimates_from_gsheet(client, service_account_email, sheet_name, worksheet_name) 
+    except gspread.exceptions.SpreadsheetNotFound:
+         st.error(f"Google Sheet '{sheet_name}' not found during save. Ensure it exists AND is shared with service account email: '{service_account_email}'.") # Use passed email
+         return current_log_df_in_memory
     except Exception as e:
         st.error(f"Google Sheets Error: Could not save estimate: {e}")
-        print(f"Error saving estimate to GSheet: {e}") # For logs
+        print(f"Error saving estimate to GSheet: {e}") 
         return current_log_df_in_memory
 
 
 @st.cache_data(ttl=3600) 
 def load_all_fund_data(uploaded_file_obj_param):
+    # ... (this function remains the same as main_app_py_v12) ...
     price_history_df = pd.DataFrame() 
     if uploaded_file_obj_param is not None:
         price_history_df = load_unit_price_history(uploaded_file_obj_param)
@@ -213,11 +234,12 @@ def load_all_fund_data(uploaded_file_obj_param):
     }
     combined_keywords.update(general_market_keywords)
     combined_keywords = {kw for kw in combined_keywords if kw and kw != 'nan' and kw != '-'} 
-    print(f"--- MainApp: Total unique keywords for news aggregation: {len(combined_keywords)} ---") # For logs
+    print(f"--- MainApp: Total unique keywords for news aggregation: {len(combined_keywords)} ---") 
     return price_history_df, all_fund_holdings_data, list(combined_keywords)
 
 @st.cache_data(ttl=900) 
 def fetch_process_news(keywords_list): 
+    # ... (this function remains the same as main_app_py_v12) ...
     raw_news = aggregate_news(RSS_FEEDS_CONFIG, keywords_list, days_history=3) 
     analyzed_news = []
     for item in raw_news:
@@ -231,17 +253,19 @@ def fetch_process_news(keywords_list):
     return analyzed_news
 
 # --- Streamlit App UI and Main Logic Starts Here ---
+# (UI setup as in main_app_py_v12)
 st.set_page_config(layout="wide", page_title="FutureSaver Analysis")
 st.title("FutureSaver - News, Sentiment & Impact Estimator")
-# Corrected timezone usage
 st.caption(f"Report Generated: {datetime.now(timezone(timedelta(hours=10))).strftime('%A, %d %B %Y, %I:%M %p AEST')}")
 
 
 st.sidebar.header("Data Upload")
 uploaded_unit_price_file = st.sidebar.file_uploader("Upload Latest Unit Price History CSV", type=["csv"])
 
-gs_client = init_gspread_client()
-estimates_log_df_global = load_estimates_from_gsheet(gs_client, GOOGLE_SHEET_NAME, WORKSHEET_NAME)
+# Initialize Gspread Client & Load Estimates Log from GSheet
+gs_client, service_account_email_from_init = init_gspread_client() 
+estimates_log_df_global = load_estimates_from_gsheet(gs_client, service_account_email_from_init, GOOGLE_SHEET_NAME, WORKSHEET_NAME)
+
 
 price_data, holdings_data_all_funds, all_keywords = load_all_fund_data(uploaded_unit_price_file)
 
@@ -266,6 +290,8 @@ selected_fund_for_detail = st.sidebar.selectbox("Choose a fund for detailed anal
 
 st.header(f"Detailed Analysis for: {selected_fund_for_detail}")
 
+# --- Display Latest Unit Price & ACTUAL Day-over-Day Change ---
+# (This section remains the same as main_app_py_v12) ...
 last_price = 0.0
 previous_price = 0.0
 last_price_date = None 
@@ -301,12 +327,14 @@ if not price_data.empty:
 else: 
     st.warning("Unit price history data is not available or not loaded.")
 
+# --- Impact Estimation Display & Saving ---
 current_holdings = holdings_data_all_funds.get(selected_fund_for_detail)
 baseline_price_for_estimation = previous_price if previous_price > 0 else last_price 
 
 if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0 and last_price_date is not None:
     st.subheader(f"Impact Estimation on Unit Price (Estimating for {last_price_date.strftime('%d/%m/%Y')} based on news up to today):")
     with st.spinner("Calculating estimated impact..."):
+        # ... (IEM keyword filtering logic as in v12) ...
         fund_specific_keywords_lc_iem = set()
         if "CanonicalHoldingName" in current_holdings.columns:
             for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -330,6 +358,7 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
             if original_match_keyword in keywords_for_iem_filter:
                 news_for_iem_calculation.append(news_item_full)
 
+
         if news_for_iem_calculation:
             iem_result = calculate_fund_impact(current_holdings, news_for_iem_calculation, baseline_price_for_estimation)
             estimated_unit_price = iem_result.get('estimated_new_unit_price', baseline_price_for_estimation)
@@ -347,9 +376,11 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
                     'BaselinePriceUsed': baseline_price_for_estimation,
                     'TotalEstPercentChange': total_est_percent_change
                 }
-                estimates_log_df_global = save_estimate_to_gsheet(gs_client, GOOGLE_SHEET_NAME, WORKSHEET_NAME, estimates_log_df_global, new_estimate_data)
+                # Pass the service account email for clearer error messages if save fails
+                estimates_log_df_global = save_estimate_to_gsheet(gs_client, service_account_email_from_init, GOOGLE_SHEET_NAME, WORKSHEET_NAME, estimates_log_df_global, new_estimate_data)
                 
             with st.expander("Show Detailed Impact Calculations"):
+                # ... (Detailed impact display as in v12) ...
                 impact_details_list = iem_result.get('impact_details', [])
                 if impact_details_list:
                     for detail in impact_details_list:
@@ -367,6 +398,7 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
 elif baseline_price_for_estimation == 0 and current_holdings is not None and not current_holdings.empty: 
     st.warning("Cannot calculate impact: Baseline unit price for estimation is zero or unavailable.")
 
+# ... (Rest of the app layout: Top 5 Holdings, Historical Chart, Relevant News Display as in main_app_py_v12) ...
 st.markdown("---") 
 if current_holdings is not None and not current_holdings.empty:
     st.subheader("Top 5 Holdings:")
@@ -490,8 +522,7 @@ if current_holdings is not None and not current_holdings.empty:
             
     st.subheader(f"Recent Relevant News ({len(fund_relevant_news_display_list)} items found for this fund):")
     if fund_relevant_news_display_list:
-        # Corrected variable name in the loop below
-        for item_disp in fund_relevant_news_display_list[:20]: 
+        for item_disp in fund_relevant_news_display_list[:20]: # Corrected variable name here
             exp_title_disp = f"{item_disp.get('published_str','N/A')} - **{item_disp.get('sentiment_strength','N/A')} ({item_disp.get('sentiment_compound',0.0):.2f})**: {item_disp.get('title','No Title')}"
             with st.expander(exp_title_disp):
                 st.markdown(f"**Source:** {item_disp.get('source_feed_name','N/A')}")
