@@ -18,7 +18,6 @@ except LookupError: # This is the more standard exception if resource is not fou
     except Exception as e:
         # This could be due to network issues on the server or write permission issues (less likely on Streamlit Cloud for nltk_data)
         print(f"ERROR: Failed to download or verify VADER lexicon after attempting download: {e}")
-        print("Sentiment analysis may not work correctly without the VADER lexicon.")
         # Depending on how critical this is, you might raise an error or allow the app to continue with a warning.
         # For now, we'll let it try to initialize Analyzer, which might fail if lexicon is truly unavailable.
 except Exception as e:
