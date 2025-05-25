@@ -1,19 +1,15 @@
 # main_app.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, timezone 
+from datetime import datetime, timedelta, timezone # Ensure timezone is imported
 import os
 import io 
-import gspread 
-from gspread_dataframe import get_as_dataframe, set_with_dataframe
-from google.oauth2.service_account import Credentials 
-import json 
 
 # --- Import your custom modules ---
 try:
     from data_loader import load_unit_price_history, load_fund_holdings
     from news_aggregator import aggregate_news, RSS_FEEDS_CONFIG 
-    from sentiment_analyzer import get_sentiment, classify_sentiment_strength
+    from sentiment_analyzer import get_sentiment, classify_sentiment_strength # This should be the corrected version
     from impact_estimator import calculate_fund_impact
 except ImportError as e:
     st.error(f"CRITICAL ERROR: Could not import one or more custom modules: {e}. ")
@@ -22,8 +18,7 @@ except ImportError as e:
 # --- Configuration ---
 DATA_DIR = "data" 
 UNIT_PRICE_DISPLAY_PRECISION = 6 
-GOOGLE_SHEET_NAME = "FutureSaverEstimatesLog"  # <-- VERIFY THIS EXACTLY (CASE-SENSITIVE)
-WORKSHEET_NAME = "Sheet1" # <-- VERIFY THIS EXACTLY (CASE-SENSITIVE)
+ESTIMATES_LOG_FILE = os.path.join(DATA_DIR, "estimated_unit_prices_log.csv") # Local CSV log
 
 HOLDINGS_FILES_INFO = [ 
     {"file": "Accumulation-High-Growth.csv", "name": "High Growth"},
@@ -43,167 +38,77 @@ HOLDINGS_FILES_INFO = [
     {"file": "Accumulation-Cash.csv", "name": "Cash"}
 ]
 
-# --- Function Definitions ---
-
-@st.cache_resource(ttl=600) 
-def init_gspread_client():
-    # ... (init_gspread_client from v13 - no changes needed here for this specific error) ...
-    try:
-        service_account_email_for_debug = "Not retrieved from creds_dict" # Default
-        if hasattr(st, 'secrets') and "google_sheets_credentials" in st.secrets:
-            creds_input = st.secrets["google_sheets_credentials"]
-            if isinstance(creds_input, str): 
-                creds_dict = json.loads(creds_input)
-            elif isinstance(creds_input, dict): 
-                creds_dict = creds_input
-            else:
-                st.error("Google Sheets credentials in Streamlit secrets are not in a recognized format.")
-                return None, service_account_email_for_debug
-            service_account_email_for_debug = creds_dict.get("client_email", "Email not in creds_dict structure")
-            creds = Credentials.from_service_account_info(creds_dict)
-        else: 
-            local_secrets_path = os.path.join(".streamlit", "secrets.toml")
-            if os.path.exists(local_secrets_path):
-                import toml
-                secrets_local = toml.load(local_secrets_path)
-                if "google_sheets_credentials" in secrets_local:
-                    creds_input = secrets_local["google_sheets_credentials"]
-                    if isinstance(creds_input, str):
-                        creds_dict = json.loads(creds_input)
-                    elif isinstance(creds_input, dict):
-                         creds_dict = creds_input
-                    else:
-                        st.error("Local Google Sheets credentials are not in a recognized format.")
-                        return None, service_account_email_for_debug
-                    service_account_email_for_debug = creds_dict.get("client_email", "Email not in creds_dict structure")
-                    creds = Credentials.from_service_account_info(creds_dict)
-                else:
-                    st.error("`google_sheets_credentials` not found in local `.streamlit/secrets.toml`.")
-                    return None, service_account_email_for_debug
-            else:
-                st.error("Local `.streamlit/secrets.toml` not found for Google Sheets credentials.")
-                return None, service_account_email_for_debug
-
-        scoped_creds = creds.with_scopes([
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive.file" 
-        ])
-        client = gspread.authorize(scoped_creds)
-        print(f"Successfully initialized gspread client. Service Account Email from creds: {service_account_email_for_debug}") 
-        return client, service_account_email_for_debug
-    except Exception as e:
-        st.error(f"Google Sheets Error: Could not initialize gspread client: {e}")
-        print(f"Error initializing gspread client: {e}") 
-        return None, "Initialization failed due to exception"
+# --- Streamlit App Layout ---
+st.set_page_config(layout="wide", page_title="FutureSaver Analysis")
+st.title("FutureSaver - News, Sentiment & Impact Estimator")
+st.caption(f"Report Generated: {datetime.now(timezone(timedelta(hours=10))).strftime('%A, %d %B %Y, %I:%M %p AEST')}")
 
 
-def load_estimates_from_gsheet(client, service_account_email, sheet_name, worksheet_name):
+st.sidebar.header("Data Upload")
+uploaded_unit_price_file = st.sidebar.file_uploader("Upload Latest Unit Price History CSV", type=["csv"])
+
+# --- Helper function to load/initialize estimates log (from local CSV) ---
+def load_or_initialize_estimates_log_local():
     expected_cols = ['RunDateTime', 'EstimationForDate', 'FundName', 
                      'EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange']
-    if client is None:
-        print("load_estimates_from_gsheet: gspread client is None, returning empty DataFrame.")
-        return pd.DataFrame(columns=expected_cols)
-    try:
-        print(f"Attempting to open GSheet: '{sheet_name}', Worksheet: '{worksheet_name}'")
-        sheet = client.open(sheet_name).worksheet(worksheet_name)
-        df = get_as_dataframe(sheet, evaluate_formulas=False, include_index=False, header=0, na_filter=False)
-        
-        if not df.empty:
+    if os.path.exists(ESTIMATES_LOG_FILE):
+        try:
+            df = pd.read_csv(ESTIMATES_LOG_FILE)
             if 'RunDateTime' in df.columns:
-                df['RunDateTime'] = pd.to_datetime(df['RunDateTime'].replace('', None), errors='coerce')
+                 df['RunDateTime'] = pd.to_datetime(df['RunDateTime'], errors='coerce')
             if 'EstimationForDate' in df.columns:
-                df['EstimationForDate'] = pd.to_datetime(df['EstimationForDate'].replace('', None), errors='coerce')
-            for col in ['EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange']:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col].replace('', None), errors='coerce')
-            df.dropna(subset=['RunDateTime', 'EstimationForDate', 'FundName'], how='all', inplace=True) 
-        else: 
-            df = pd.DataFrame(columns=expected_cols)
-            print(f"GSheet '{sheet_name}/{worksheet_name}' was empty or only had headers.")
-        
-        for col in expected_cols: 
-            if col not in df.columns:
-                df[col] = pd.Series(dtype='object' if 'Date' in col else ('float64' if 'Price' in col or 'Change' in col else 'object'))
-        
-        print(f"Successfully loaded {len(df)} estimates from Google Sheet: {sheet_name}/{worksheet_name}") 
-        return df
-    except gspread.exceptions.SpreadsheetNotFound:
-        # Simplified error message to avoid AttributeError
-        error_msg = (
-            f"Google Sheet '{sheet_name}' not found. "
-            f"Please ensure: \n1. The sheet name is an EXACT match (case-sensitive). "
-            f"\n2. The sheet has been shared with the service account email: '{service_account_email}' with 'Editor' permissions. "
-            f"\n3. The GOOGLE_SHEET_NAME constant in your script is correct."
-        )
-        st.error(error_msg)
-        print(error_msg) # Also print to logs
-        return pd.DataFrame(columns=expected_cols)
-    except gspread.exceptions.WorksheetNotFound:
-        error_msg = f"Worksheet '{worksheet_name}' not found in Google Sheet '{sheet_name}'. Check WORKSHEET_NAME."
-        st.error(error_msg)
-        print(error_msg)
-        return pd.DataFrame(columns=expected_cols)
-    except Exception as e:
-        st.error(f"Google Sheets Error: Could not load estimates: {e}")
-        print(f"Error loading estimates from GSheet: {e}") 
-        return pd.DataFrame(columns=expected_cols)
+                 df['EstimationForDate'] = pd.to_datetime(df['EstimationForDate'], errors='coerce')
+            df.dropna(subset=['RunDateTime', 'EstimationForDate', 'FundName'], how='any', inplace=True) # Drop if key dates are bad
+            # Ensure all expected columns exist
+            for col in expected_cols:
+                if col not in df.columns:
+                    df[col] = pd.NA # Or appropriate default
+            return df[expected_cols] # Return in expected order
+        except Exception as e:
+            print(f"Error loading local estimates log '{ESTIMATES_LOG_FILE}': {e}. Initializing new log.")
+    return pd.DataFrame(columns=expected_cols)
 
-def save_estimate_to_gsheet(client, service_account_email, sheet_name, worksheet_name, current_log_df_in_memory, new_estimate_data):
-    # ... (save_estimate_to_gsheet from v13 - no changes needed here for this specific error) ...
-    if client is None:
-        st.warning("Google Sheets client not initialized. Cannot save estimate to cloud.")
-        return current_log_df_in_memory
+def save_estimate_to_log_local(log_df, new_estimate_data):
+    """Appends a new estimate and saves the log to local CSV."""
+    new_row_df = pd.DataFrame([new_estimate_data])
+    if 'RunDateTime' in new_row_df.columns:
+        new_row_df['RunDateTime'] = pd.to_datetime(new_row_df['RunDateTime'])
+    if 'EstimationForDate' in new_row_df.columns:
+        new_row_df['EstimationForDate'] = pd.to_datetime(new_row_df['EstimationForDate'])
 
+    # Basic duplicate check for this session (can be improved)
+    # For local CSV, overwriting or just appending might be fine.
+    # This check prevents exact re-runs in quick succession from bloating the log too much.
+    if not log_df.empty and not new_row_df.empty:
+        # Check against last entry for same fund and estimation date
+        last_entry_for_fund_date = log_df[
+            (log_df['FundName'] == new_estimate_data['FundName']) &
+            (log_df['EstimationForDate'] == new_estimate_data['EstimationForDate'])
+        ].tail(1)
+        if not last_entry_for_fund_date.empty:
+            if abs(last_entry_for_fund_date['EstimatedUnitPrice'].iloc[0] - new_estimate_data['EstimatedUnitPrice']) < 1e-9:
+                print(f"Skipping save to local log for likely duplicate estimate: {new_estimate_data['FundName']}")
+                return log_df
+
+
+    updated_log_df = pd.concat([log_df, new_row_df], ignore_index=True)
     try:
-        sheet = client.open(sheet_name).worksheet(worksheet_name)
-        new_row_dict_for_df = {k: [v] for k,v in new_estimate_data.items()}
-        new_row_df = pd.DataFrame(new_row_dict_for_df)
-        
-        if 'RunDateTime' in new_row_df.columns:
-            new_row_df['RunDateTime'] = pd.to_datetime(new_row_df['RunDateTime']).dt.strftime('%Y-%m-%d %H:%M:%S')
-        if 'EstimationForDate' in new_row_df.columns:
-            new_row_df['EstimationForDate'] = pd.to_datetime(new_row_df['EstimationForDate']).dt.strftime('%Y-%m-%d')
-
-        df_to_save = current_log_df_in_memory.copy()
-        if 'RunDateTime' in df_to_save.columns:
-            df_to_save['RunDateTime'] = pd.to_datetime(df_to_save['RunDateTime'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
-        if 'EstimationForDate' in df_to_save.columns:
-            df_to_save['EstimationForDate'] = pd.to_datetime(df_to_save['EstimationForDate'], errors='coerce').dt.strftime('%Y-%m-%d')
-        
-        expected_cols_order = ['RunDateTime', 'EstimationForDate', 'FundName', 
-                               'EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange']
-        for col_expect in expected_cols_order:
-            if col_expect not in new_row_df.columns:
-                new_row_df[col_expect] = None 
-        
-        if not df_to_save.empty:
-            cols_for_new_row = [col for col in df_to_save.columns if col in new_row_df.columns]
-            new_row_df = new_row_df[cols_for_new_row]
-        else: 
-            new_row_df = new_row_df[expected_cols_order]
-
-        updated_df_for_gsheet = pd.concat([df_to_save, new_row_df], ignore_index=True)
-        set_with_dataframe(sheet, updated_df_for_gsheet.astype(str), include_index=False, resize=True, allow_formulas=False) 
-        
-        print(f"Successfully saved estimate for {new_estimate_data['FundName']} to GSheet: {sheet_name}/{worksheet_name}") 
-        return load_estimates_from_gsheet(client, service_account_email, sheet_name, worksheet_name) 
-    except gspread.exceptions.SpreadsheetNotFound:
-         error_msg = (
-            f"Google Sheet '{sheet_name}' not found during save. "
-            f"Ensure it exists AND is shared with service account email: '{service_account_email}'."
-        )
-         st.error(error_msg)
-         print(error_msg)
-         return current_log_df_in_memory
+        # Ensure data directory exists
+        os.makedirs(DATA_DIR, exist_ok=True)
+        updated_log_df.to_csv(ESTIMATES_LOG_FILE, index=False)
+        print(f"Successfully saved estimate for {new_estimate_data['FundName']} to local log: {ESTIMATES_LOG_FILE}")
     except Exception as e:
-        st.error(f"Google Sheets Error: Could not save estimate: {e}")
-        print(f"Error saving estimate to GSheet: {e}") 
-        return current_log_df_in_memory
+        print(f"Error saving estimates to local log '{ESTIMATES_LOG_FILE}': {e}")
+    return updated_log_df
+
+# Load existing estimates log (local version)
+estimates_log_df_global = load_or_initialize_estimates_log_local()
 
 
+# --- Global Data Loading (cached) ---
 @st.cache_data(ttl=3600) 
 def load_all_fund_data(uploaded_file_obj_param):
-    # ... (this function remains the same as main_app_py_v13) ...
+    # ... (this function is the same as in main_app_py_v12/v13) ...
     price_history_df = pd.DataFrame() 
     if uploaded_file_obj_param is not None:
         price_history_df = load_unit_price_history(uploaded_file_obj_param)
@@ -254,7 +159,7 @@ def load_all_fund_data(uploaded_file_obj_param):
 
 @st.cache_data(ttl=900) 
 def fetch_process_news(keywords_list): 
-    # ... (this function remains the same as main_app_py_v13) ...
+    # ... (this function is the same as in main_app_py_v12/v13) ...
     raw_news = aggregate_news(RSS_FEEDS_CONFIG, keywords_list, days_history=3) 
     analyzed_news = []
     for item in raw_news:
@@ -267,19 +172,9 @@ def fetch_process_news(keywords_list):
         analyzed_news.append(item)
     return analyzed_news
 
-# --- Streamlit App UI and Main Logic ---
-# (The rest of the main_app.py from v13, including UI rendering and calling these functions,
-# would follow here. No changes are needed in those subsequent parts for this specific error.)
-st.set_page_config(layout="wide", page_title="FutureSaver Analysis")
-st.title("FutureSaver - News, Sentiment & Impact Estimator")
-st.caption(f"Report Generated: {datetime.now(timezone(timedelta(hours=10))).strftime('%A, %d %B %Y, %I:%M %p AEST')}")
-
-
-st.sidebar.header("Data Upload")
-uploaded_unit_price_file = st.sidebar.file_uploader("Upload Latest Unit Price History CSV", type=["csv"])
-
-gs_client, service_account_email_from_init = init_gspread_client() 
-estimates_log_df_global = load_estimates_from_gsheet(gs_client, service_account_email_from_init, GOOGLE_SHEET_NAME, WORKSHEET_NAME)
+# --- Main App UI and Logic Starts Here ---
+# (UI setup as in main_app_py_v12/v13)
+# ...
 
 price_data, holdings_data_all_funds, all_keywords = load_all_fund_data(uploaded_unit_price_file)
 
@@ -304,6 +199,8 @@ selected_fund_for_detail = st.sidebar.selectbox("Choose a fund for detailed anal
 
 st.header(f"Detailed Analysis for: {selected_fund_for_detail}")
 
+# --- Display Latest Unit Price & ACTUAL Day-over-Day Change ---
+# (This section remains the same as main_app_py_v12/v13) ...
 last_price = 0.0
 previous_price = 0.0
 last_price_date = None 
@@ -339,12 +236,14 @@ if not price_data.empty:
 else: 
     st.warning("Unit price history data is not available or not loaded.")
 
+# --- Impact Estimation Display & Saving (to LOCAL CSV) ---
 current_holdings = holdings_data_all_funds.get(selected_fund_for_detail)
 baseline_price_for_estimation = previous_price if previous_price > 0 else last_price 
 
 if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0 and last_price_date is not None:
     st.subheader(f"Impact Estimation on Unit Price (Estimating for {last_price_date.strftime('%d/%m/%Y')} based on news up to today):")
     with st.spinner("Calculating estimated impact..."):
+        # ... (IEM keyword filtering logic as in v12/v13) ...
         fund_specific_keywords_lc_iem = set()
         if "CanonicalHoldingName" in current_holdings.columns:
             for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -376,7 +275,7 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
             st.metric("Total Est. % Change from News", f"{total_est_percent_change:.4f}%")
             st.metric(f"Estimated Unit Price (for {last_price_date.strftime('%d/%m/%Y')})", f"{estimated_unit_price:.{UNIT_PRICE_DISPLAY_PRECISION}f}")
 
-            if last_price_date and gs_client: 
+            if last_price_date: 
                 new_estimate_data = {
                     'RunDateTime': datetime.now(), 
                     'EstimationForDate': last_price_date, 
@@ -385,9 +284,11 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
                     'BaselinePriceUsed': baseline_price_for_estimation,
                     'TotalEstPercentChange': total_est_percent_change
                 }
-                estimates_log_df_global = save_estimate_to_gsheet(gs_client, service_account_email_from_init, GOOGLE_SHEET_NAME, WORKSHEET_NAME, estimates_log_df_global, new_estimate_data)
+                # Call the local CSV save function
+                estimates_log_df_global = save_estimate_to_log_local(estimates_log_df_global, new_estimate_data)
                 
             with st.expander("Show Detailed Impact Calculations"):
+                # ... (Detailed impact display as in v12/v13) ...
                 impact_details_list = iem_result.get('impact_details', [])
                 if impact_details_list:
                     for detail in impact_details_list:
@@ -405,6 +306,8 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
 elif baseline_price_for_estimation == 0 and current_holdings is not None and not current_holdings.empty: 
     st.warning("Cannot calculate impact: Baseline unit price for estimation is zero or unavailable.")
 
+# ... (Rest of the app layout: Top 5 Holdings, Historical Chart, Relevant News Display as in main_app_py_v12/v13, 
+#      making sure to use `estimates_log_df_global` for plotting which now comes from local CSV) ...
 st.markdown("---") 
 if current_holdings is not None and not current_holdings.empty:
     st.subheader("Top 5 Holdings:")
@@ -440,6 +343,7 @@ if not price_data.empty :
             actual_plot_pivot.columns = [f"{col}_Actual" for col in actual_plot_pivot.columns]
             
         estimated_plot_pivot = pd.DataFrame()
+        # Use the estimates_log_df_global which is now from local CSV
         if not estimates_log_df_global.empty and 'FundName' in estimates_log_df_global.columns:
             estimated_plot_data_source = estimates_log_df_global[estimates_log_df_global['FundName'].isin(selected_funds_for_plot)].copy()
             if not estimated_plot_data_source.empty:
@@ -489,6 +393,7 @@ else:
             st.line_chart(actual_plot_pivot)
 
 if current_holdings is not None and not current_holdings.empty:
+    # ... (News display section as in v12/v13) ...
     fund_specific_keywords_lc_display = set()
     if "CanonicalHoldingName" in current_holdings.columns:
         for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -537,5 +442,7 @@ if current_holdings is not None and not current_holdings.empty:
                 if item_disp.get('link'): st.markdown(f"[Read full article]({item_disp['link']})", unsafe_allow_html=True)
     else: st.info("No specific or generally relevant news found for this fund in the last 3 days from configured feeds for display.")
 
+
 st.sidebar.markdown("---")
 st.sidebar.info("Prototype V1.0. For informational and educational purposes only. Not financial advice.")
+
