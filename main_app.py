@@ -18,6 +18,7 @@ except ImportError as e:
 # --- Configuration ---
 DATA_DIR = "data" 
 UNIT_PRICE_DISPLAY_PRECISION = 6 
+ESTIMATES_LOG_FILE = os.path.join(DATA_DIR, "estimated_unit_prices_log.csv")
 
 HOLDINGS_FILES_INFO = [ 
     {"file": "Accumulation-High-Growth.csv", "name": "High Growth"},
@@ -40,10 +41,61 @@ HOLDINGS_FILES_INFO = [
 # --- Streamlit App Layout ---
 st.set_page_config(layout="wide", page_title="FutureSaver Analysis")
 st.title("FutureSaver - News, Sentiment & Impact Estimator")
-st.caption(f"Report Generated: {datetime.now().strftime('%A, %d %B %Y, %I:%M %p AEST')}") # Added AEST
+st.caption(f"Report Generated: {datetime.now().strftime('%A, %d %B %Y, %I:%M %p AEST')}")
 
 st.sidebar.header("Data Upload")
 uploaded_unit_price_file = st.sidebar.file_uploader("Upload Latest Unit Price History CSV", type=["csv"])
+
+# --- Helper function to load/initialize estimates log ---
+def load_or_initialize_estimates_log():
+    if os.path.exists(ESTIMATES_LOG_FILE):
+        try:
+            df = pd.read_csv(ESTIMATES_LOG_FILE)
+            # Ensure correct datetime parsing for existing log file
+            df['RunDateTime'] = pd.to_datetime(df['RunDateTime'], errors='coerce')
+            df['EstimationForDate'] = pd.to_datetime(df['EstimationForDate'], errors='coerce')
+            df.dropna(subset=['RunDateTime', 'EstimationForDate'], inplace=True)
+            return df
+        except Exception as e:
+            print(f"Error loading estimates log: {e}. Initializing new log.")
+            pass # Fall through to initialize new
+    return pd.DataFrame(columns=['RunDateTime', 'EstimationForDate', 'FundName', 
+                                 'EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange'])
+
+def save_estimate_to_log(log_df, new_estimate_data):
+    """Appends a new estimate and saves the log. Prevents duplicate for same fund/estimation_date/run_date."""
+    new_row_df = pd.DataFrame([new_estimate_data])
+    # Convert to datetime if not already (for comparison)
+    new_row_df['RunDateTime'] = pd.to_datetime(new_row_df['RunDateTime'])
+    new_row_df['EstimationForDate'] = pd.to_datetime(new_row_df['EstimationForDate'])
+
+    # Simple check to avoid exact duplicate rows if app is re-run quickly without new data
+    # A more robust check might consider only latest estimate per EstimationForDate per FundName
+    if not log_df.empty:
+        # Check if a very similar record (same fund, estimation date, and estimate) exists from today
+        # This is a basic check.
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        is_duplicate = log_df[
+            (log_df['FundName'] == new_estimate_data['FundName']) &
+            (log_df['EstimationForDate'].dt.strftime('%Y-%m-%d') == new_estimate_data['EstimationForDate'].strftime('%Y-%m-%d')) &
+            (log_df['RunDateTime'].dt.strftime('%Y-%m-%d') == today_str) &
+            (abs(log_df['EstimatedUnitPrice'] - new_estimate_data['EstimatedUnitPrice']) < 1e-9) # Check if estimate is identical
+        ].shape[0] > 0
+        if is_duplicate:
+            print(f"Skipping save for likely duplicate estimate for {new_estimate_data['FundName']} on {new_estimate_data['EstimationForDate'].strftime('%Y-%m-%d')}")
+            return log_df # Return original log
+
+    updated_log_df = pd.concat([log_df, new_row_df], ignore_index=True)
+    try:
+        updated_log_df.to_csv(ESTIMATES_LOG_FILE, index=False)
+        print(f"Successfully saved estimate for {new_estimate_data['FundName']} to log.")
+    except Exception as e:
+        print(f"Error saving estimates log: {e}")
+    return updated_log_df
+
+# Load existing estimates log
+estimates_log_df = load_or_initialize_estimates_log()
+
 
 # --- Global Data Loading (cached) ---
 @st.cache_data(ttl=3600) 
@@ -51,17 +103,16 @@ def load_all_fund_data(uploaded_file_obj):
     price_history_df = pd.DataFrame() 
     if uploaded_file_obj is not None:
         price_history_df = load_unit_price_history(uploaded_file_obj)
-        # Ensure 'Date' column is datetime
         if 'Date' in price_history_df.columns:
             price_history_df['Date'] = pd.to_datetime(price_history_df['Date'], errors='coerce')
-            price_history_df.dropna(subset=['Date'], inplace=True) # Remove rows where date couldn't be parsed
+            price_history_df.dropna(subset=['Date'], inplace=True)
         st.sidebar.success(f"Loaded unit prices from: {uploaded_file_obj.name}")
     else:
         st.sidebar.warning("Please upload a Unit Price History CSV to begin analysis.")
         default_unit_price_file = os.path.join(DATA_DIR, "FutureSaver_UnitPriceHistory-22-05-2025.csv") 
         if os.path.exists(default_unit_price_file):
             price_history_df = load_unit_price_history(default_unit_price_file)
-            if 'Date' in price_history_df.columns: # Also ensure Date is datetime for default
+            if 'Date' in price_history_df.columns:
                  price_history_df['Date'] = pd.to_datetime(price_history_df['Date'], errors='coerce')
                  price_history_df.dropna(subset=['Date'], inplace=True)
             st.sidebar.info(f"Using default unit price file: {default_unit_price_file}")
@@ -70,11 +121,10 @@ def load_all_fund_data(uploaded_file_obj):
 
     all_fund_holdings_data = {}
     combined_keywords = set()
-    # print("\n--- MainApp: Loading All Fund Holdings & Generating Keywords ---") # CLI
     for fund_spec in HOLDINGS_FILES_INFO:
         holdings_file_path = os.path.join(DATA_DIR, fund_spec["file"])
         if not os.path.exists(holdings_file_path):
-            print(f"Holdings file not found: {holdings_file_path} for fund {fund_spec['name']}") # CLI
+            print(f"Holdings file not found: {holdings_file_path} for fund {fund_spec['name']}")
             all_fund_holdings_data[fund_spec["name"]] = pd.DataFrame() 
             continue
         holdings_df = load_fund_holdings(holdings_file_path) 
@@ -98,11 +148,11 @@ def load_all_fund_data(uploaded_file_obj):
     }
     combined_keywords.update(general_market_keywords)
     combined_keywords = {kw for kw in combined_keywords if kw and kw != 'nan' and kw != '-'} 
-    # print(f"--- MainApp: Total unique keywords for news aggregation: {len(combined_keywords)} ---") # CLI
     return price_history_df, all_fund_holdings_data, list(combined_keywords)
 
 @st.cache_data(ttl=900) 
 def fetch_process_news(keywords_list):
+    # ... (fetch_process_news function remains the same as main_app_py_v8) ...
     raw_news = aggregate_news(RSS_FEEDS_CONFIG, keywords_list, days_history=3) 
     analyzed_news = []
     for item in raw_news:
@@ -114,6 +164,7 @@ def fetch_process_news(keywords_list):
         item["sentiment_strength"] = classify_sentiment_strength(sentiment["compound"])
         analyzed_news.append(item)
     return analyzed_news
+
 
 # --- Main App Logic ---
 price_data, holdings_data_all_funds, all_keywords = load_all_fund_data(uploaded_unit_price_file)
@@ -142,6 +193,7 @@ st.header(f"Detailed Analysis for: {selected_fund_for_detail}")
 
 last_price = 0.0
 previous_price = 0.0
+last_price_date = None # Store the actual datetime object
 last_price_date_str = "N/A"
 
 if not price_data.empty:
@@ -149,13 +201,12 @@ if not price_data.empty:
     if not fund_price_history_selected.empty:
         latest_entry = fund_price_history_selected.iloc[0]
         last_price = latest_entry['UnitPrice']
-        last_price_date = latest_entry['Date'] # Keep as datetime for comparison
+        last_price_date = latest_entry['Date'] 
         last_price_date_str = last_price_date.strftime('%d/%m/%Y')
         st.subheader(f"Latest Actual Unit Price ({last_price_date_str}): {last_price:.{UNIT_PRICE_DISPLAY_PRECISION}f}")
 
         if len(fund_price_history_selected) > 1:
             previous_entry = fund_price_history_selected.iloc[1]
-            # Ensure previous_entry date is actually before latest_entry date
             if previous_entry['Date'] < last_price_date:
                 previous_price = previous_entry['UnitPrice']
                 previous_price_date_str = previous_entry['Date'].strftime('%d/%m/%Y')
@@ -165,11 +216,11 @@ if not price_data.empty:
                 actual_change_percent_str = f"{actual_change_percent:+.4f}%"
                 st.metric(label=f"Actual Change from {previous_price_date_str}", value=actual_change_str, delta=f"{actual_change_percent_str}")
             else:
-                st.info("Previous day's price not directly before latest; cannot calculate simple day-over-day change accurately.")
-                previous_price = last_price # Use last_price as baseline if no valid previous
+                st.info("Previous day's price not directly before latest; using latest as baseline for estimation.")
+                previous_price = last_price 
         else:
             st.info("Not enough historical data to calculate actual day-over-day change.")
-            previous_price = last_price # Use last_price if only one record
+            previous_price = last_price 
     else: 
         st.warning(f"No price history found for {selected_fund_for_detail} in the uploaded file.")
 else: 
@@ -178,10 +229,10 @@ else:
 current_holdings = holdings_data_all_funds.get(selected_fund_for_detail)
 baseline_price_for_estimation = previous_price if previous_price > 0 else last_price 
 
-if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0:
-    st.subheader("Impact Estimation on Unit Price (Estimating for Today):")
+if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0 and last_price_date is not None:
+    st.subheader(f"Impact Estimation on Unit Price (Estimating for {last_price_date.strftime('%d/%m/%Y')} based on news up to today):")
     with st.spinner("Calculating estimated impact..."):
-        # ... (IEM keyword filtering and calculation logic remains the same as main_app_py_v5) ...
+        # ... (IEM keyword filtering logic remains the same as main_app_py_v8) ...
         fund_specific_keywords_lc_iem = set()
         if "CanonicalHoldingName" in current_holdings.columns:
             for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -207,8 +258,26 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
 
         if news_for_iem_calculation:
             iem_result = calculate_fund_impact(current_holdings, news_for_iem_calculation, baseline_price_for_estimation)
-            st.metric("Total Est. % Change from News", f"{iem_result.get('total_estimated_fund_percentage_change',0.0):.4f}%")
-            st.metric("Estimated New Unit Price (for today)", f"{iem_result.get('estimated_new_unit_price', baseline_price_for_estimation):.{UNIT_PRICE_DISPLAY_PRECISION}f}")
+            estimated_unit_price = iem_result.get('estimated_new_unit_price', baseline_price_for_estimation)
+            total_est_percent_change = iem_result.get('total_estimated_fund_percentage_change',0.0)
+
+            st.metric("Total Est. % Change from News", f"{total_est_percent_change:.4f}%")
+            st.metric(f"Estimated Unit Price (for {last_price_date.strftime('%d/%m/%Y')})", f"{estimated_unit_price:.{UNIT_PRICE_DISPLAY_PRECISION}f}")
+
+            # --- Save the estimate to log ---
+            if last_price_date: # Ensure we have a valid date for the estimation
+                new_estimate_data = {
+                    'RunDateTime': datetime.now(),
+                    'EstimationForDate': last_price_date, # The date this estimate applies to
+                    'FundName': selected_fund_for_detail,
+                    'EstimatedUnitPrice': estimated_unit_price,
+                    'BaselinePriceUsed': baseline_price_for_estimation,
+                    'TotalEstPercentChange': total_est_percent_change
+                }
+                estimates_log_df = save_estimate_to_log(estimates_log_df, new_estimate_data)
+                # No need to assign back to global here, save_estimate_to_log updates the file.
+                # For immediate reflection in plotting if needed, could re-load or update in-memory df.
+                # For simplicity, chart will use data from log file loaded at start or after save.
 
             with st.expander("Show Detailed Impact Calculations"):
                 # ... (Detailed impact display remains the same) ...
@@ -242,20 +311,13 @@ if current_holdings is not None and not current_holdings.empty:
 else:
     st.warning(f"No holdings data loaded for {selected_fund_for_detail}.")
 
-# --- NEW SECTION: Historical Unit Price Chart ---
+# --- Historical Unit Price Chart (Actual vs. Estimated) ---
 st.markdown("---")
-st.header("Historical Unit Price Chart")
+st.header("Historical Unit Price Chart (Actual vs. Estimated)")
 
 if not price_data.empty:
     all_fund_names_for_plot = sorted(price_data['FundName'].unique())
-    
-    # Default selection for the plot:
-    # Try to default to the fund selected for detailed analysis, if it exists in plot data.
-    default_selection_for_plot = []
-    if selected_fund_for_detail in all_fund_names_for_plot:
-        default_selection_for_plot = [selected_fund_for_detail]
-    elif all_fund_names_for_plot: # Fallback to the first available fund if current selection not in plot data
-        default_selection_for_plot = [all_fund_names_for_plot[0]]
+    default_selection_for_plot = [selected_fund_for_detail] if selected_fund_for_detail in all_fund_names_for_plot else ([all_fund_names_for_plot[0]] if all_fund_names_for_plot else [])
 
     selected_funds_for_plot = st.multiselect(
         "Select fund(s) to plot:",
@@ -264,28 +326,70 @@ if not price_data.empty:
     )
 
     if selected_funds_for_plot:
-        plot_data = price_data[price_data['FundName'].isin(selected_funds_for_plot)]
-        if not plot_data.empty:
-            # Pivot data for st.line_chart: Date as index, each fund as a column
-            # Ensure 'Date' is datetime and sorted for correct plotting
-            plot_data_pivot = plot_data.pivot_table(
-                index='Date', 
-                columns='FundName', 
-                values='UnitPrice'
+        # Prepare Actual Prices Data
+        actual_plot_data = price_data[price_data['FundName'].isin(selected_funds_for_plot)].copy()
+        if not actual_plot_data.empty:
+            actual_plot_data['Date'] = pd.to_datetime(actual_plot_data['Date'])
+            actual_plot_pivot = actual_plot_data.pivot_table(
+                index='Date', columns='FundName', values='UnitPrice'
             ).sort_index()
+            actual_plot_pivot.columns = [f"{col}_Actual" for col in actual_plot_pivot.columns] # Rename for legend
+
+            # Prepare Estimated Prices Data (from log)
+            # Ensure estimates_log_df is up-to-date if new estimates were just saved
+            # For simplicity, we use the version loaded at app start or after the latest save
+            # A more reactive way would be to pass estimates_log_df as a mutable object or use session state.
+            # For now, let's re-load it if a save just happened, or use the one in memory.
+            # We need to ensure 'EstimationForDate' is datetime
+            current_estimates_log_df = load_or_initialize_estimates_log() # Get the latest from file
+            if 'EstimationForDate' in current_estimates_log_df.columns:
+                 current_estimates_log_df['EstimationForDate'] = pd.to_datetime(current_estimates_log_df['EstimationForDate'])
+
+
+            estimated_plot_data = current_estimates_log_df[current_estimates_log_df['FundName'].isin(selected_funds_for_plot)].copy()
             
-            st.line_chart(plot_data_pivot)
+            combined_plot_df = actual_plot_pivot
+            
+            if not estimated_plot_data.empty:
+                # To plot estimates for the *same day* as actuals, we use 'EstimationForDate'
+                # We might have multiple estimates for the same day if app run multiple times.
+                # For plotting, let's take the average or latest estimate per day.
+                estimated_plot_data_agg = estimated_plot_data.groupby(['EstimationForDate', 'FundName'])['EstimatedUnitPrice'].mean().reset_index()
+                
+                estimated_plot_pivot = estimated_plot_data_agg.pivot_table(
+                    index='EstimationForDate', columns='FundName', values='EstimatedUnitPrice'
+                ).sort_index()
+                estimated_plot_pivot.columns = [f"{col}_Estimated" for col in estimated_plot_pivot.columns]
+                estimated_plot_pivot.index.name = 'Date' # Align index name for merge
+
+                # Merge actual and estimated data
+                combined_plot_df = pd.merge(actual_plot_pivot, estimated_plot_pivot, on='Date', how='outer').sort_index()
+            
+            if not combined_plot_df.empty:
+                # Select only columns for currently selected funds for plotting
+                cols_to_plot = []
+                for fund_name_plot in selected_funds_for_plot:
+                    if f"{fund_name_plot}_Actual" in combined_plot_df.columns:
+                        cols_to_plot.append(f"{fund_name_plot}_Actual")
+                    if f"{fund_name_plot}_Estimated" in combined_plot_df.columns:
+                        cols_to_plot.append(f"{fund_name_plot}_Estimated")
+                
+                if cols_to_plot:
+                    st.line_chart(combined_plot_df[cols_to_plot])
+                else:
+                    st.write("No data columns available for plotting after merging.")
+            else:
+                st.write("No data available for the selected fund(s) to plot (actual or estimated).")
         else:
-            st.write("No data available for the selected fund(s) to plot.")
+            st.write("No actual price data available for the selected fund(s) to plot.")
     else:
         st.info("Select one or more funds from the dropdown above to display their historical unit prices.")
 else:
     st.warning("Unit price data not loaded. Cannot display historical chart.")
 
-
-# --- Display Relevant News (this logic is for display, might differ slightly from IEM input) ---
+# --- Display Relevant News ---
 if current_holdings is not None and not current_holdings.empty:
-    # ... (News display section remains the same as main_app_py_v5) ...
+    # ... (News display section remains the same as main_app_py_v8) ...
     fund_specific_keywords_lc_display = set()
     if "CanonicalHoldingName" in current_holdings.columns:
         for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -334,7 +438,5 @@ if current_holdings is not None and not current_holdings.empty:
                 if item_disp.get('link'): st.markdown(f"[Read full article]({item_disp['link']})", unsafe_allow_html=True)
     else: st.info("No specific or generally relevant news found for this fund in the last 3 days from configured feeds for display.")
 
-
 st.sidebar.markdown("---")
 st.sidebar.info("Prototype V1.0. For informational and educational purposes only. Not financial advice.")
-
