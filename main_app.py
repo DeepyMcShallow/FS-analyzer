@@ -1,7 +1,7 @@
 # main_app.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, timezone # Ensure timezone is imported
+from datetime import datetime, timedelta, timezone 
 import os
 import io 
 
@@ -9,7 +9,7 @@ import io
 try:
     from data_loader import load_unit_price_history, load_fund_holdings
     from news_aggregator import aggregate_news, RSS_FEEDS_CONFIG 
-    from sentiment_analyzer import get_sentiment, classify_sentiment_strength # This should be the corrected version
+    from sentiment_analyzer import get_sentiment, classify_sentiment_strength 
     from impact_estimator import calculate_fund_impact
 except ImportError as e:
     st.error(f"CRITICAL ERROR: Could not import one or more custom modules: {e}. ")
@@ -49,6 +49,7 @@ uploaded_unit_price_file = st.sidebar.file_uploader("Upload Latest Unit Price Hi
 
 # --- Helper function to load/initialize estimates log (from local CSV) ---
 def load_or_initialize_estimates_log_local():
+    # ... (Same as main_app_py_v9_local_log) ...
     expected_cols = ['RunDateTime', 'EstimationForDate', 'FundName', 
                      'EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange']
     if os.path.exists(ESTIMATES_LOG_FILE):
@@ -58,42 +59,36 @@ def load_or_initialize_estimates_log_local():
                  df['RunDateTime'] = pd.to_datetime(df['RunDateTime'], errors='coerce')
             if 'EstimationForDate' in df.columns:
                  df['EstimationForDate'] = pd.to_datetime(df['EstimationForDate'], errors='coerce')
-            df.dropna(subset=['RunDateTime', 'EstimationForDate', 'FundName'], how='any', inplace=True) # Drop if key dates are bad
-            # Ensure all expected columns exist
+            df.dropna(subset=['RunDateTime', 'EstimationForDate', 'FundName'], how='any', inplace=True)
             for col in expected_cols:
                 if col not in df.columns:
-                    df[col] = pd.NA # Or appropriate default
-            return df[expected_cols] # Return in expected order
+                    df[col] = pd.NA 
+            return df[expected_cols] 
         except Exception as e:
             print(f"Error loading local estimates log '{ESTIMATES_LOG_FILE}': {e}. Initializing new log.")
     return pd.DataFrame(columns=expected_cols)
 
 def save_estimate_to_log_local(log_df, new_estimate_data):
-    """Appends a new estimate and saves the log to local CSV."""
+    # ... (Same as main_app_py_v9_local_log) ...
     new_row_df = pd.DataFrame([new_estimate_data])
     if 'RunDateTime' in new_row_df.columns:
         new_row_df['RunDateTime'] = pd.to_datetime(new_row_df['RunDateTime'])
     if 'EstimationForDate' in new_row_df.columns:
         new_row_df['EstimationForDate'] = pd.to_datetime(new_row_df['EstimationForDate'])
 
-    # Basic duplicate check for this session (can be improved)
-    # For local CSV, overwriting or just appending might be fine.
-    # This check prevents exact re-runs in quick succession from bloating the log too much.
     if not log_df.empty and not new_row_df.empty:
-        # Check against last entry for same fund and estimation date
         last_entry_for_fund_date = log_df[
             (log_df['FundName'] == new_estimate_data['FundName']) &
             (log_df['EstimationForDate'] == new_estimate_data['EstimationForDate'])
         ].tail(1)
         if not last_entry_for_fund_date.empty:
-            if abs(last_entry_for_fund_date['EstimatedUnitPrice'].iloc[0] - new_estimate_data['EstimatedUnitPrice']) < 1e-9:
-                print(f"Skipping save to local log for likely duplicate estimate: {new_estimate_data['FundName']}")
+            if abs(last_entry_for_fund_date['EstimatedUnitPrice'].iloc[0] - new_estimate_data['EstimatedUnitPrice']) < 1e-9 and \
+               abs(last_entry_for_fund_date['TotalEstPercentChange'].iloc[0] - new_estimate_data['TotalEstPercentChange']) < 1e-9 :
+                print(f"Skipping save to local log for likely duplicate/unchanged estimate: {new_estimate_data['FundName']}")
                 return log_df
-
 
     updated_log_df = pd.concat([log_df, new_row_df], ignore_index=True)
     try:
-        # Ensure data directory exists
         os.makedirs(DATA_DIR, exist_ok=True)
         updated_log_df.to_csv(ESTIMATES_LOG_FILE, index=False)
         print(f"Successfully saved estimate for {new_estimate_data['FundName']} to local log: {ESTIMATES_LOG_FILE}")
@@ -101,14 +96,13 @@ def save_estimate_to_log_local(log_df, new_estimate_data):
         print(f"Error saving estimates to local log '{ESTIMATES_LOG_FILE}': {e}")
     return updated_log_df
 
-# Load existing estimates log (local version)
 estimates_log_df_global = load_or_initialize_estimates_log_local()
 
 
 # --- Global Data Loading (cached) ---
 @st.cache_data(ttl=3600) 
 def load_all_fund_data(uploaded_file_obj_param):
-    # ... (this function is the same as in main_app_py_v12/v13) ...
+    # ... (Same as main_app_py_v9_local_log) ...
     price_history_df = pd.DataFrame() 
     if uploaded_file_obj_param is not None:
         price_history_df = load_unit_price_history(uploaded_file_obj_param)
@@ -154,12 +148,11 @@ def load_all_fund_data(uploaded_file_obj_param):
     }
     combined_keywords.update(general_market_keywords)
     combined_keywords = {kw for kw in combined_keywords if kw and kw != 'nan' and kw != '-'} 
-    print(f"--- MainApp: Total unique keywords for news aggregation: {len(combined_keywords)} ---") 
     return price_history_df, all_fund_holdings_data, list(combined_keywords)
 
 @st.cache_data(ttl=900) 
 def fetch_process_news(keywords_list): 
-    # ... (this function is the same as in main_app_py_v12/v13) ...
+    # ... (Same as main_app_py_v9_local_log) ...
     raw_news = aggregate_news(RSS_FEEDS_CONFIG, keywords_list, days_history=3) 
     analyzed_news = []
     for item in raw_news:
@@ -173,7 +166,7 @@ def fetch_process_news(keywords_list):
     return analyzed_news
 
 # --- Main App UI and Logic Starts Here ---
-# (UI setup as in main_app_py_v12/v13)
+# (UI setup as in main_app_py_v9_local_log)
 # ...
 
 price_data, holdings_data_all_funds, all_keywords = load_all_fund_data(uploaded_unit_price_file)
@@ -200,7 +193,7 @@ selected_fund_for_detail = st.sidebar.selectbox("Choose a fund for detailed anal
 st.header(f"Detailed Analysis for: {selected_fund_for_detail}")
 
 # --- Display Latest Unit Price & ACTUAL Day-over-Day Change ---
-# (This section remains the same as main_app_py_v12/v13) ...
+# (This section remains the same as main_app_py_v9_local_log) ...
 last_price = 0.0
 previous_price = 0.0
 last_price_date = None 
@@ -243,7 +236,7 @@ baseline_price_for_estimation = previous_price if previous_price > 0 else last_p
 if current_holdings is not None and not current_holdings.empty and news_items_analyzed and baseline_price_for_estimation > 0 and last_price_date is not None:
     st.subheader(f"Impact Estimation on Unit Price (Estimating for {last_price_date.strftime('%d/%m/%Y')} based on news up to today):")
     with st.spinner("Calculating estimated impact..."):
-        # ... (IEM keyword filtering logic as in v12/v13) ...
+        # ... (IEM keyword filtering logic as in v9_local_log) ...
         fund_specific_keywords_lc_iem = set()
         if "CanonicalHoldingName" in current_holdings.columns:
             for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -284,11 +277,10 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
                     'BaselinePriceUsed': baseline_price_for_estimation,
                     'TotalEstPercentChange': total_est_percent_change
                 }
-                # Call the local CSV save function
                 estimates_log_df_global = save_estimate_to_log_local(estimates_log_df_global, new_estimate_data)
                 
             with st.expander("Show Detailed Impact Calculations"):
-                # ... (Detailed impact display as in v12/v13) ...
+                # ... (Detailed impact display as in v9_local_log) ...
                 impact_details_list = iem_result.get('impact_details', [])
                 if impact_details_list:
                     for detail in impact_details_list:
@@ -306,8 +298,7 @@ if current_holdings is not None and not current_holdings.empty and news_items_an
 elif baseline_price_for_estimation == 0 and current_holdings is not None and not current_holdings.empty: 
     st.warning("Cannot calculate impact: Baseline unit price for estimation is zero or unavailable.")
 
-# ... (Rest of the app layout: Top 5 Holdings, Historical Chart, Relevant News Display as in main_app_py_v12/v13, 
-#      making sure to use `estimates_log_df_global` for plotting which now comes from local CSV) ...
+# ... (Top 5 Holdings display as in v9_local_log) ...
 st.markdown("---") 
 if current_holdings is not None and not current_holdings.empty:
     st.subheader("Top 5 Holdings:")
@@ -320,18 +311,41 @@ if current_holdings is not None and not current_holdings.empty:
 else:
     st.warning(f"No holdings data loaded for {selected_fund_for_detail}.")
 
+
+# --- MODIFIED SECTION: Historical Unit Price Chart (Actual vs. Estimated from Local CSV) ---
 st.markdown("---")
 st.header("Historical Unit Price Chart (Actual vs. Estimated)")
+
 if not price_data.empty : 
     all_fund_names_for_plot = sorted(list(price_data['FundName'].unique())) 
+    # Also include fund names that might only be in the estimates log
     if not estimates_log_df_global.empty and 'FundName' in estimates_log_df_global.columns:
          all_fund_names_for_plot = sorted(list(set(all_fund_names_for_plot) | set(estimates_log_df_global['FundName'].unique())))
     
-    default_selection_for_plot = [selected_fund_for_detail] if selected_fund_for_detail in all_fund_names_for_plot else ([all_fund_names_for_plot[0]] if all_fund_names_for_plot else [])
+    # --- "Select All" Checkbox ---
+    col1, col2 = st.columns([0.7, 0.3]) # Adjust column width ratio as needed
+    with col1:
+        # Default selection for the plot:
+        default_selection_for_plot = [selected_fund_for_detail] if selected_fund_for_detail in all_fund_names_for_plot else ([all_fund_names_for_plot[0]] if all_fund_names_for_plot else [])
+        
+        # If "Select All" is checked, selected_funds_for_plot will be overridden
+        current_selection = st.multiselect(
+            "Select fund(s) to plot:", 
+            options=all_fund_names_for_plot, 
+            default=default_selection_for_plot,
+            key="plot_fund_multiselect" # Add a key for potential state management
+        )
+    with col2:
+        st.write("") # Add some space
+        st.write("") # Add some space
+        select_all_option = st.checkbox("Plot All Funds", value=False, key="plot_all_funds_cb")
 
-    selected_funds_for_plot = st.multiselect(
-        "Select fund(s) to plot:", options=all_fund_names_for_plot, default=default_selection_for_plot
-    )
+    selected_funds_for_plot = all_fund_names_for_plot if select_all_option else current_selection
+    
+    # --- Date Range Filter for Zoom (Last Week Default) ---
+    show_full_history = st.checkbox("Show Full History", value=False, key="plot_full_history_cb")
+
+
     if selected_funds_for_plot:
         actual_plot_data = price_data[price_data['FundName'].isin(selected_funds_for_plot)].copy()
         actual_plot_pivot = pd.DataFrame()
@@ -343,7 +357,6 @@ if not price_data.empty :
             actual_plot_pivot.columns = [f"{col}_Actual" for col in actual_plot_pivot.columns]
             
         estimated_plot_pivot = pd.DataFrame()
-        # Use the estimates_log_df_global which is now from local CSV
         if not estimates_log_df_global.empty and 'FundName' in estimates_log_df_global.columns:
             estimated_plot_data_source = estimates_log_df_global[estimates_log_df_global['FundName'].isin(selected_funds_for_plot)].copy()
             if not estimated_plot_data_source.empty:
@@ -352,7 +365,7 @@ if not price_data.empty :
                 
                 estimated_plot_data_agg = estimated_plot_data_source.sort_values('RunDateTime').groupby(
                     ['EstimationForDate', 'FundName'], as_index=False
-                ).last() 
+                ).last() # Take the latest estimate for a given day
                 
                 if not estimated_plot_data_agg.empty and 'EstimatedUnitPrice' in estimated_plot_data_agg.columns :
                     estimated_plot_pivot = estimated_plot_data_agg.pivot_table(
@@ -361,6 +374,7 @@ if not price_data.empty :
                     estimated_plot_pivot.columns = [f"{col}_Estimated" for col in estimated_plot_pivot.columns]
                     estimated_plot_pivot.index.name = 'Date' 
 
+        # Merge actual and estimated data
         if not actual_plot_pivot.empty and not estimated_plot_pivot.empty:
             combined_plot_df = pd.merge(actual_plot_pivot, estimated_plot_pivot, on='Date', how='outer').sort_index()
         elif not actual_plot_pivot.empty: combined_plot_df = actual_plot_pivot
@@ -368,32 +382,67 @@ if not price_data.empty :
         else: combined_plot_df = pd.DataFrame()
         
         if not combined_plot_df.empty:
-            cols_to_plot = []
-            for fund_name_plot in selected_funds_for_plot:
-                if f"{fund_name_plot}_Actual" in combined_plot_df.columns: cols_to_plot.append(f"{fund_name_plot}_Actual")
-                if f"{fund_name_plot}_Estimated" in combined_plot_df.columns: cols_to_plot.append(f"{fund_name_plot}_Estimated")
-            if cols_to_plot: st.line_chart(combined_plot_df[cols_to_plot])
-            else: st.write("No data columns for plotting for selected fund(s).")
+            # --- Apply Date Zoom ---
+            chart_data_to_display = combined_plot_df
+            if not show_full_history and not combined_plot_df.empty:
+                max_date_in_data = combined_plot_df.index.max()
+                if pd.notna(max_date_in_data): # Check if max_date is valid
+                    start_date_last_week = max_date_in_data - timedelta(days=6)
+                    chart_data_to_display = combined_plot_df[combined_plot_df.index >= start_date_last_week]
+                else: # If no valid max date, show full (should not happen if data exists)
+                    chart_data_to_display = combined_plot_df
+            
+            if not chart_data_to_display.empty:
+                cols_to_plot = []
+                for fund_name_plot in selected_funds_for_plot: # Iterate over the selection for plotting
+                    actual_col_name = f"{fund_name_plot}_Actual"
+                    estimated_col_name = f"{fund_name_plot}_Estimated"
+                    if actual_col_name in chart_data_to_display.columns: cols_to_plot.append(actual_col_name)
+                    if estimated_col_name in chart_data_to_display.columns: cols_to_plot.append(estimated_col_name)
+                
+                if cols_to_plot: 
+                    st.line_chart(chart_data_to_display[cols_to_plot])
+                else: st.write("No data columns available for plotting for the selected fund(s) in the chosen date range.")
+            else:
+                 st.write("No data available for the selected fund(s) in the chosen date range (last week or full history). Try toggling 'Show Full History'.")
         else: st.write("No actual or estimated data to plot for selected fund(s).")
     else: st.info("Select fund(s) to display historical prices.")
 elif price_data.empty:
     st.warning("Unit price data not loaded. Cannot display historical chart.")
 else: 
     st.info("No estimates logged yet to display on historical chart. Actuals can still be plotted.")
-    all_fund_names_for_plot = sorted(list(price_data['FundName'].unique()))
-    default_selection_for_plot = [selected_fund_for_detail] if selected_fund_for_detail in all_fund_names_for_plot else ([all_fund_names_for_plot[0]] if all_fund_names_for_plot else [])
-    selected_funds_for_plot = st.multiselect(
-        "Select fund(s) to plot (Actuals Only):", options=all_fund_names_for_plot, default=default_selection_for_plot
+    # ... (Fallback to plot actuals only if estimates are empty, remains same as main_app_py_v9_local_log) ...
+    all_fund_names_for_plot_actuals = sorted(list(price_data['FundName'].unique()))
+    default_selection_for_plot_actuals = [selected_fund_for_detail] if selected_fund_for_detail in all_fund_names_for_plot_actuals else ([all_fund_names_for_plot_actuals[0]] if all_fund_names_for_plot_actuals else [])
+    selected_funds_for_plot_actuals = st.multiselect(
+        "Select fund(s) to plot (Actuals Only):", options=all_fund_names_for_plot_actuals, default=default_selection_for_plot_actuals, key="actuals_plot_ms"
     )
-    if selected_funds_for_plot:
-        actual_plot_data = price_data[price_data['FundName'].isin(selected_funds_for_plot)].copy()
-        if not actual_plot_data.empty:
-            actual_plot_data['Date'] = pd.to_datetime(actual_plot_data['Date'])
-            actual_plot_pivot = actual_plot_data.pivot_table(index='Date', columns='FundName', values='UnitPrice').sort_index()
-            st.line_chart(actual_plot_pivot)
+    show_full_history_actuals = st.checkbox("Show Full History (Actuals Only)", value=False, key="actuals_plot_fh_cb")
 
+    if selected_funds_for_plot_actuals:
+        actual_plot_data_only = price_data[price_data['FundName'].isin(selected_funds_for_plot_actuals)].copy()
+        if not actual_plot_data_only.empty:
+            actual_plot_data_only['Date'] = pd.to_datetime(actual_plot_data_only['Date'])
+            actual_plot_pivot_only = actual_plot_data_only.pivot_table(index='Date', columns='FundName', values='UnitPrice').sort_index()
+            
+            chart_data_actuals_display = actual_plot_pivot_only
+            if not show_full_history_actuals and not actual_plot_pivot_only.empty:
+                max_date_actuals = actual_plot_pivot_only.index.max()
+                if pd.notna(max_date_actuals):
+                    start_date_actuals_week = max_date_actuals - timedelta(days=6)
+                    chart_data_actuals_display = actual_plot_pivot_only[actual_plot_pivot_only.index >= start_date_actuals_week]
+            
+            if not chart_data_actuals_display.empty:
+                st.line_chart(chart_data_actuals_display)
+            else:
+                st.write("No actual data in the selected date range.")
+        else:
+            st.write("No actual data for the selected fund(s).")
+
+
+# --- Display Relevant News ---
+# ... (News display section remains the same as main_app_py_v9_local_log) ...
 if current_holdings is not None and not current_holdings.empty:
-    # ... (News display section as in v12/v13) ...
     fund_specific_keywords_lc_display = set()
     if "CanonicalHoldingName" in current_holdings.columns:
         for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -441,7 +490,6 @@ if current_holdings is not None and not current_holdings.empty:
                 st.markdown(str(item_disp.get("summary","")))
                 if item_disp.get('link'): st.markdown(f"[Read full article]({item_disp['link']})", unsafe_allow_html=True)
     else: st.info("No specific or generally relevant news found for this fund in the last 3 days from configured feeds for display.")
-
 
 st.sidebar.markdown("---")
 st.sidebar.info("Prototype V1.0. For informational and educational purposes only. Not financial advice.")
