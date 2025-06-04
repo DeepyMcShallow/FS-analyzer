@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone 
 import os
 import io 
+import plotly.graph_objects as go # Import Plotly
 
 # --- Import your custom modules ---
 try:
@@ -61,7 +62,9 @@ def load_or_initialize_estimates_log_local():
             df.dropna(subset=['RunDateTime', 'EstimationForDate', 'FundName'], how='any', inplace=True)
             for col in expected_cols:
                 if col not in df.columns:
-                    df[col] = pd.NA 
+                    if 'Date' in col: df[col] = pd.NaT
+                    elif 'Price' in col or 'Change' in col: df[col] = pd.NA 
+                    else: df[col] = pd.NA
             return df[expected_cols] 
         except Exception as e:
             print(f"Error loading local estimates log '{ESTIMATES_LOG_FILE}': {e}. Initializing new log.")
@@ -70,23 +73,32 @@ def load_or_initialize_estimates_log_local():
 def save_estimate_to_log_local(log_df, new_estimate_data):
     new_row_df = pd.DataFrame([new_estimate_data])
     if 'RunDateTime' in new_row_df.columns:
-        new_row_df['RunDateTime'] = pd.to_datetime(new_row_df['RunDateTime'])
+        new_row_df['RunDateTime'] = pd.to_datetime(new_row_df['RunDateTime'], errors='coerce')
     if 'EstimationForDate' in new_row_df.columns:
-        new_row_df['EstimationForDate'] = pd.to_datetime(new_row_df['EstimationForDate'])
+        new_row_df['EstimationForDate'] = pd.to_datetime(new_row_df['EstimationForDate'], errors='coerce')
+    for col_num in ['EstimatedUnitPrice', 'BaselinePriceUsed', 'TotalEstPercentChange']:
+        if col_num in new_row_df.columns:
+            new_row_df[col_num] = pd.to_numeric(new_row_df[col_num], errors='coerce')
 
     if not log_df.empty and not new_row_df.empty:
-        last_entry_for_fund_date = log_df[
-            (log_df['FundName'] == new_estimate_data['FundName']) &
-            (log_df['EstimationForDate'] == new_estimate_data['EstimationForDate'])
+        log_df_copy = log_df.copy()
+        if 'EstimationForDate' in log_df_copy.columns:
+            log_df_copy['EstimationForDate'] = pd.to_datetime(log_df_copy['EstimationForDate'], errors='coerce')
+        
+        last_entry_for_fund_date = log_df_copy[
+            (log_df_copy['FundName'] == new_estimate_data['FundName']) &
+            (log_df_copy['EstimationForDate'] == new_estimate_data['EstimationForDate']) 
         ].tail(1)
         if not last_entry_for_fund_date.empty:
-            # Check if essential estimated values are the same to prevent exact duplicates
             if abs(last_entry_for_fund_date['EstimatedUnitPrice'].iloc[0] - new_estimate_data['EstimatedUnitPrice']) < 1e-9 and \
                abs(last_entry_for_fund_date['TotalEstPercentChange'].iloc[0] - new_estimate_data['TotalEstPercentChange']) < 1e-9 :
                 print(f"Skipping save to local log for likely duplicate/unchanged estimate: {new_estimate_data['FundName']}")
                 return log_df
 
-    updated_log_df = pd.concat([log_df, new_row_df], ignore_index=True)
+    for col in log_df.columns:
+        if col not in new_row_df.columns:
+            new_row_df[col] = pd.NA
+    updated_log_df = pd.concat([log_df, new_row_df[log_df.columns]], ignore_index=True) 
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         updated_log_df.to_csv(ESTIMATES_LOG_FILE, index=False)
@@ -96,7 +108,6 @@ def save_estimate_to_log_local(log_df, new_estimate_data):
     return updated_log_df
 
 estimates_log_df_global = load_or_initialize_estimates_log_local()
-
 
 # --- Global Data Loading (cached) ---
 @st.cache_data(ttl=3600) 
@@ -302,7 +313,7 @@ else:
     st.warning(f"No holdings data loaded for {selected_fund_for_detail}.")
 
 
-# --- MODIFIED SECTION: Historical Unit Price Chart ---
+# --- MODIFIED SECTION: Historical Unit Price Chart with Plotly ---
 st.markdown("---")
 st.header("Historical Unit Price Chart (Actual vs. Estimated)")
 
@@ -311,98 +322,103 @@ if not price_data.empty :
     if not estimates_log_df_global.empty and 'FundName' in estimates_log_df_global.columns:
          all_fund_names_for_plot = sorted(list(set(all_fund_names_for_plot) | set(estimates_log_df_global['FundName'].unique())))
     
-    # --- Chart Control Options ---
-    plot_options_cols = st.columns(3)
+    plot_options_cols = st.columns(2) # Use 2 columns for fund select and "Plot All"
     with plot_options_cols[0]:
-        # Default selection for the plot:
         default_selection_for_plot = [selected_fund_for_detail] if selected_fund_for_detail in all_fund_names_for_plot else ([all_fund_names_for_plot[0]] if all_fund_names_for_plot else [])
-        
         current_selection = st.multiselect(
             "Select fund(s) to plot:", 
             options=all_fund_names_for_plot, 
             default=default_selection_for_plot,
-            key="plot_fund_multiselect"
+            key="plot_fund_multiselect_plotly"
         )
     with plot_options_cols[1]:
-        select_all_option = st.checkbox("Plot All Loaded Funds", value=False, key="plot_all_funds_cb")
-    with plot_options_cols[2]:
-        date_range_options = ["Full History", "Last 90 Days", "Last 30 Days", "Last 7 Days"]
-        selected_date_range = st.selectbox("Select Date Range:", date_range_options, index=0, key="plot_date_range_sb") # Default to Full History
+        select_all_option = st.checkbox("Plot All Loaded Funds", value=False, key="plot_all_funds_plotly_cb")
 
     selected_funds_for_plot = all_fund_names_for_plot if select_all_option else current_selection
     
     if selected_funds_for_plot:
-        # Prepare Actual Prices Data
-        actual_plot_data = price_data[price_data['FundName'].isin(selected_funds_for_plot)].copy()
-        actual_plot_pivot = pd.DataFrame()
-        if not actual_plot_data.empty:
-            actual_plot_data['Date'] = pd.to_datetime(actual_plot_data['Date'])
-            actual_plot_pivot = actual_plot_data.pivot_table(
-                index='Date', columns='FundName', values='UnitPrice'
-            ).sort_index()
-            actual_plot_pivot.columns = [f"{col}_Actual" for col in actual_plot_pivot.columns]
+        fig = go.Figure()
+        
+        # Get overall min/max dates from all data for the selected funds for consistent x-axis
+        min_date_actual = None
+        max_date_actual = None
+        
+        # Plot Actual Prices
+        actual_plot_data_filtered = price_data[price_data['FundName'].isin(selected_funds_for_plot)].copy()
+        if not actual_plot_data_filtered.empty:
+            actual_plot_data_filtered['Date'] = pd.to_datetime(actual_plot_data_filtered['Date'])
+            actual_plot_data_filtered = actual_plot_data_filtered.sort_values(by='Date')
+            if min_date_actual is None or actual_plot_data_filtered['Date'].min() < min_date_actual:
+                min_date_actual = actual_plot_data_filtered['Date'].min()
+            if max_date_actual is None or actual_plot_data_filtered['Date'].max() > max_date_actual:
+                max_date_actual = actual_plot_data_filtered['Date'].max()
+
+            for fund_name in selected_funds_for_plot:
+                fund_actual_data = actual_plot_data_filtered[actual_plot_data_filtered['FundName'] == fund_name]
+                if not fund_actual_data.empty:
+                    fig.add_trace(go.Scatter(x=fund_actual_data['Date'], y=fund_actual_data['UnitPrice'],
+                                             mode='lines', name=f'{fund_name} (Actual)'))
             
-        # Prepare Estimated Prices Data
-        estimated_plot_pivot = pd.DataFrame()
+        # Plot Estimated Prices
         if not estimates_log_df_global.empty and 'FundName' in estimates_log_df_global.columns:
             estimated_plot_data_source = estimates_log_df_global[estimates_log_df_global['FundName'].isin(selected_funds_for_plot)].copy()
             if not estimated_plot_data_source.empty:
                 if 'EstimationForDate' in estimated_plot_data_source.columns:
                      estimated_plot_data_source['EstimationForDate'] = pd.to_datetime(estimated_plot_data_source['EstimationForDate'])
                 
+                # Take the latest estimate for a given day if multiple exist
                 estimated_plot_data_agg = estimated_plot_data_source.sort_values('RunDateTime').groupby(
                     ['EstimationForDate', 'FundName'], as_index=False
                 ).last() 
-                
-                if not estimated_plot_data_agg.empty and 'EstimatedUnitPrice' in estimated_plot_data_agg.columns :
-                    estimated_plot_pivot = estimated_plot_data_agg.pivot_table(
-                        index='EstimationForDate', columns='FundName', values='EstimatedUnitPrice'
-                    ).sort_index()
-                    estimated_plot_pivot.columns = [f"{col}_Estimated" for col in estimated_plot_pivot.columns]
-                    estimated_plot_pivot.index.name = 'Date' 
+                estimated_plot_data_agg = estimated_plot_data_agg.sort_values(by='EstimationForDate')
 
-        # Merge actual and estimated data
-        if not actual_plot_pivot.empty and not estimated_plot_pivot.empty:
-            combined_plot_df = pd.merge(actual_plot_pivot, estimated_plot_pivot, on='Date', how='outer').sort_index()
-        elif not actual_plot_pivot.empty: combined_plot_df = actual_plot_pivot
-        elif not estimated_plot_pivot.empty: combined_plot_df = estimated_plot_pivot
-        else: combined_plot_df = pd.DataFrame()
+                if min_date_actual is None or (not estimated_plot_data_agg.empty and estimated_plot_data_agg['EstimationForDate'].min() < min_date_actual) :
+                     if not estimated_plot_data_agg.empty: min_date_actual = estimated_plot_data_agg['EstimationForDate'].min()
+                if max_date_actual is None or (not estimated_plot_data_agg.empty and estimated_plot_data_agg['EstimationForDate'].max() > max_date_actual):
+                     if not estimated_plot_data_agg.empty: max_date_actual = estimated_plot_data_agg['EstimationForDate'].max()
+
+
+                for fund_name in selected_funds_for_plot:
+                    fund_estimated_data = estimated_plot_data_agg[estimated_plot_data_agg['FundName'] == fund_name]
+                    if not fund_estimated_data.empty and 'EstimatedUnitPrice' in fund_estimated_data.columns:
+                        fig.add_trace(go.Scatter(x=fund_estimated_data['EstimationForDate'], 
+                                                 y=fund_estimated_data['EstimatedUnitPrice'],
+                                                 mode='lines+markers', name=f'{fund_name} (Est.)',
+                                                 line=dict(dash='dash'), marker=dict(size=5)))
         
-        if not combined_plot_df.empty:
-            # --- Apply Date Range Filter ---
-            chart_data_to_display = combined_plot_df
-            max_date_in_data = combined_plot_df.index.max()
+        if fig.data: # If any traces were added
+            # Set initial zoom to last 7 days if data exists
+            initial_xaxis_range = None
+            if max_date_actual and pd.notna(max_date_actual):
+                start_zoom_date = max_date_actual - timedelta(days=6)
+                end_zoom_date = max_date_actual + timedelta(days=1) # Add a little padding
+                initial_xaxis_range = [start_zoom_date, end_zoom_date]
+                print(f"DEBUG Plotly Chart: Initial X-axis range set to: {initial_xaxis_range}")
 
-            if pd.notna(max_date_in_data): # Ensure max_date is valid
-                if selected_date_range == "Last 7 Days":
-                    start_date_filter = max_date_in_data - timedelta(days=6)
-                    chart_data_to_display = combined_plot_df[combined_plot_df.index >= start_date_filter]
-                elif selected_date_range == "Last 30 Days":
-                    start_date_filter = max_date_in_data - timedelta(days=29)
-                    chart_data_to_display = combined_plot_df[combined_plot_df.index >= start_date_filter]
-                elif selected_date_range == "Last 90 Days":
-                    start_date_filter = max_date_in_data - timedelta(days=89)
-                    chart_data_to_display = combined_plot_df[combined_plot_df.index >= start_date_filter]
-                elif selected_date_range == "Year to Date":
-                    start_date_filter = datetime(max_date_in_data.year, 1, 1)
-                    chart_data_to_display = combined_plot_df[combined_plot_df.index >= start_date_filter]
-                # Else ("Full History"), chart_data_to_display remains combined_plot_df
-            
-            if not chart_data_to_display.empty:
-                cols_to_plot = []
-                for fund_name_plot in selected_funds_for_plot: 
-                    actual_col_name = f"{fund_name_plot}_Actual"
-                    estimated_col_name = f"{fund_name_plot}_Estimated"
-                    if actual_col_name in chart_data_to_display.columns: cols_to_plot.append(actual_col_name)
-                    if estimated_col_name in chart_data_to_display.columns: cols_to_plot.append(estimated_col_name)
-                
-                if cols_to_plot: 
-                    st.line_chart(chart_data_to_display[cols_to_plot])
-                else: st.write("No data columns available for plotting for the selected fund(s) in the chosen date range.")
-            else:
-                 st.write(f"No data available for the selected fund(s) in the '{selected_date_range}' range. Try 'Full History'.")
-        else: st.write("No actual or estimated data to plot for selected fund(s).")
-    else: st.info("Select fund(s) to display historical prices.")
+            fig.update_layout(
+                title_text="Unit Price History (Actual vs. Estimated)",
+                xaxis_title="Date",
+                yaxis_title="Unit Price",
+                legend_title_text='Fund',
+                height=600, # Adjust height as needed
+                xaxis_rangeselector_buttons=list([ # Add rangeselector buttons
+                    dict(count=7, label="1w", step="day", stepmode="backward"),
+                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                    dict(count=3, label="3m", step="month", stepmode="backward"),
+                    dict(count=6, label="6m", step="month", stepmode="backward"),
+                    dict(count=1, label="YTD", step="year", stepmode="todate"),
+                    dict(count=1, label="1y", step="year", stepmode="backward"),
+                    dict(step="all")
+                ])
+            )
+            if initial_xaxis_range:
+                 fig.update_xaxes(range=initial_xaxis_range)
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.write("No data available to plot for the selected fund(s).")
+    else: 
+        st.info("Select fund(s) to display historical prices.")
 elif price_data.empty:
     st.warning("Unit price data not loaded. Cannot display historical chart.")
 else: 
@@ -411,7 +427,7 @@ else:
 
 # --- Display Relevant News ---
 if current_holdings is not None and not current_holdings.empty:
-    # ... (News display section remains the same as main_app_py_v9_local_log) ...
+    # ... (News display section remains the same) ...
     fund_specific_keywords_lc_display = set()
     if "CanonicalHoldingName" in current_holdings.columns:
         for name_val in current_holdings["CanonicalHoldingName"].dropna().unique():
@@ -460,5 +476,7 @@ if current_holdings is not None and not current_holdings.empty:
                 if item_disp.get('link'): st.markdown(f"[Read full article]({item_disp['link']})", unsafe_allow_html=True)
     else: st.info("No specific or generally relevant news found for this fund in the last 3 days from configured feeds for display.")
 
+
 st.sidebar.markdown("---")
 st.sidebar.info("Prototype V1.0. For informational and educational purposes only. Not financial advice.")
+

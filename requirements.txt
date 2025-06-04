@@ -4,6 +4,9 @@ feedparser
 nltk
 requests
 python-dateutil
-gspread  # New library for Google Sheets
-gspread-dataframe # New library to work with pandas DataFrames and gspread
-oauth2client # Often a dependency for gspread, good to have
+gspread
+gspread-dataframe
+oauth2client
+toml 
+plotly  # <-- Add this line
+beautifulsoup4 # If you kept the HTML stripping for news summaries
